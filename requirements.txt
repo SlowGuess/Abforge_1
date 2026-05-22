@@ -1,0 +1,10 @@
+datasets
+fastapi
+openai
+pandas
+pyarrow
+torch
+transformers
+uvicorn
+vllm
+wandb
