@@ -54,6 +54,8 @@ python dataprocess/prepare_task2_rl.py \
 
 The held-out evaluation files are under `data/eval/`.
 
+Task 1 RL/eval defaults use the v18.3 count penalty: one free extra bullet above GT, soft penalty 0.005 up to 7 bullets, and hard penalty 0.05 beyond 7. Override with `TASK1_COUNT_*` environment variables when needed.
+
 ## SFT
 
 ```bash
@@ -109,6 +111,7 @@ JUDGE_MODEL=Qwen/Qwen3-32B TP_SIZE=2 PORT=8000 scripts/serve_local_judge_vllm.sh
 export JUDGE_API_BASE=http://127.0.0.1:8000/v1
 export JUDGE_API_KEY=dummy
 export JUDGE_MODEL=Qwen/Qwen3-32B
+scripts/serve_task1_reward_api.sh
 scripts/serve_task2_reward_api.sh
 ```
 
@@ -138,5 +141,4 @@ scripts/evaluate_task2.sh outputs/task2_infer.jsonl
 - No Slurm scripts are included in this public layout.
 - No training data, checkpoints, logs, secrets, or machine-specific paths should
   be committed.
-- The old Task 1 Research-Question formulation is intentionally omitted; only
-  the Task 1 path is exposed.
+- Task 1 currently uses the v18.3 TM+RQ formulation: 2-6 bullets, each with a target module and a high-level research question.

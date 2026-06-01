@@ -28,11 +28,19 @@ import concurrent.futures
 import json
 import os
 import re
+import sys
 import time
+from pathlib import Path
 from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
 from openai import OpenAI
+
+REWARD_DIR = Path(__file__).resolve().parents[1] / "reward"
+if str(REWARD_DIR) not in sys.path:
+    sys.path.append(str(REWARD_DIR))
+
+from task1_candidate_utils import compute_count_penalty_v2_from_env  # noqa: E402
 
 
 # ======================== Config ========================
@@ -66,36 +74,38 @@ EVALUATION PROCEDURE:
   Process the reference focuses 1..N IN ORDER. For each focus:
     1. Read the focus.
     2. Look at the UNCONSUMED candidate bullets (bullets not yet cited as primary_match by an earlier focus).
-    3. For each candidate, judge whether its Target Module names the same atomic ablation as the focus.
+    3. For each candidate, judge whether its (Target Module + Research Question) addresses the same atomic ablation as the focus.
     4. Assign the score 0 / 0.5 / 1.0 per the rubric below. Record the bullet's integer ID in primary_match (or 0 if no bullet qualifies).
     5. A bullet picked as primary_match for the current focus is CONSUMED — do NOT cite it for any later focus.
 
 ATOMIC ABLATION means: a single specific paper-introduced method, component, design choice, or experimental contrast (e.g., "Beam search width", "Prototype Attentive Module", "BiasNorm vs LayerNorm", "L_adv + L_unsup joint loss"). NOT a combo of abstract categories.
 
-TARGET-MODULE MATCHING: Each bullet is just a Target Module heading. Match by whether the target module names the same atomic ablation as the focus. There is no Research Question to disambiguate the bullet; judge purely from the target-module string.
+DUAL SIGNAL: Use BOTH the bullet's Target Module heading AND its Research Question text. TM tells you the bullet's main subject; RQ confirms (or disconfirms) it engages the focus's actual experimental concern. A bullet earns credit only when TM + RQ together point to the focus.
 
-SCORING:
+SCORING (v18 — tightened 0.5 + same-component 1.0):
 
-  1.0 — DEDICATED ATOMIC MATCH
-        TM clearly names the same atomic ablation as the focus. Phrasing differences are fine (still 1.0):
-          • synonymous verbs ("necessity" ≈ "contribution" ≈ "effect" ≈ "with-vs-without")
-          • TM atomizes a single-component focus (Example: focus="Effect of beam width on translation" ←→ TM="Beam search width" → 1.0)
-          • Comparison atomization: focus="A vs B" is ONE experiment; a bullet naming A, naming B, or naming the contrast all score 1.0.
-            (Example: focus="LoRA vs Fully Fine-tuning" ←→ TM="LoRA fine-tuning" → 1.0)
-          • Joint composite: focus names X AND Y as a paper-joint ablation, TM names BOTH.
-            (Example: focus="L_adv and L_unsup loss design" ←→ TM="L_adv + L_unsup joint loss" → 1.0)
+  1.0 — ATOMIC MATCH ON SAME PAPER COMPONENT
+        Award 1.0 in ANY of these cases (component identity matters more than verb identity):
+          • DIRECT MATCH: TM clearly names the same atomic ablation as the focus AND RQ confirms the same experimental concern. Synonymous verbs are fine ("necessity" ≈ "contribution" ≈ "effect" ≈ "with-vs-without").
+          • SINGLE-COMPONENT ATOMIZATION
+            (Ex: focus="Effect of beam width on translation" ←→ TM="Beam search width" → 1.0)
+          • COMPARISON ATOMIZATION: focus="A vs B" is ONE experiment; a bullet naming A, naming B, or naming the contrast all score 1.0.
+            (Ex: focus="LoRA vs Fully Fine-tuning" ←→ TM="LoRA fine-tuning" with RQ about replacing full FT → 1.0)
+          • JOINT COMPOSITE: focus names X AND Y as a paper-joint ablation, TM names BOTH.
+            (Ex: focus="L_adv and L_unsup loss design" ←→ TM="L_adv + L_unsup joint loss" → 1.0)
+          • SAME COMPONENT, DIFFERENT VALID ANGLE (v18):
+            TM names the same paper-specific component/mechanism as the focus, AND the RQ probes a different but legitimate experimental angle on that same component (sensitivity ↔ robustness ↔ necessity ↔ magnitude). The bullet must be testing the same paper artifact, just from another direction.
+            CONSTRAINT: This rule applies ONLY when the component is paper-specific (named module / mechanism / design choice). It does NOT promote generic-category bullets.
 
-  0.5 — NEAR-1.0 WITH MINOR PHRASING FLAW (USE SPARINGLY)
-        Reserve for cases where you have HIGH CONFIDENCE the bullet is about the SAME atomic ablation as the focus, but the TM heading has a small imperfection:
-          • TM is slightly broader/vaguer in wording than the focus, but unambiguously points to the same paper-level concern.
-            (Example: focus="Effect of beam width on translation" ←→ TM="Decoding parameter tuning" → 0.5)
-          • TM names only ONE side of a TRUE joint ablation OR ONE side of a TRUE comparison.
-            (Example: focus="Contribution of L_adv and L_unsup joint loss" ←→ TM="Adversarial loss" → 0.5)
+  0.5 — RESCUED MATCH (v18 — TIGHTENED, USE SPARINGLY)
+        HARD PREREQUISITE: at least one of TM or RQ MUST mention a paper-specific term that the focus also references (a named module, mechanism, design choice, or technical detail visible in the focus or its description). If the bullet is generic enough to appear unchanged in any ML paper, score 0 — NOT 0.5. RQ keyword overlap with the focus alone is NOT sufficient — there must be paper-specific anchoring.
 
-        CRITICAL — 0.5 is closer to 1.0 than to 0. Give 0.5 only when you would give 1.0 if the TM phrasing were slightly cleaner. When in doubt:
-          • If the TM does NOT clearly point to the focus's concern → score 0, NOT 0.5.
-          • If the TM is a GENERIC UMBRELLA (see 0.0 (a) below) → score 0.
-          • Do NOT use 0.5 for "topically related" / "different framing" / "higher abstraction" / "adjacent question" — those are 0.
+        Award 0.5 in the following cases (prereq must hold first):
+          • Case A — Vague TM rescued by precise RQ: TM is broader/vaguer than the focus, BUT the RQ contains a paper-specific term that locks the bullet to the focus's atomic concern.
+          • Case B — Precise TM but generic RQ: TM exactly names the focus's paper-specific component, BUT the RQ is a generic template ("Is X critical for performance?" / "Does X improve results?") that adds no paper-specific detail beyond what the TM already says.
+          • Case C — One side of TRUE joint/comparison: TM names ONE side of a TRUE joint ablation OR ONE side of a TRUE comparison, AND the RQ confirms the bullet IS engaging the focus's experimental point.
+
+        Do NOT use 0.5 for "topically related" / "different aspect" / "higher abstraction" / "adjacent question" — those are 0.
 
   0.0 — NO MATCH. Apply 0 if ANY hold:
 
@@ -111,6 +121,8 @@ SCORING:
     (b) The focus appears only inside a parenthetical enumeration "(e.g., A, B, ...)" of a bullet whose TM is about a different topic.
 
     (c) No unconsumed bullet specifically addresses the focus (different aspect / different component / vague catchall listing many components).
+
+    (d) (v18) PURE PARAPHRASE: Both TM and RQ use only generic-category phrasings that could appear in many ML papers, even if topically aligned with the focus. There is no paper-specific anchor in either field — score 0, not 0.5.
 
 1:1 ENFORCEMENT (post-hoc by evaluator):
   After your scoring, the evaluator script keeps each bullet's pairing only with the HIGHEST-scoring focus (tie-break: earlier focus wins). If you cite the same bullet for two focuses, the lower-scoring focus will be zeroed. Follow the procedure above strictly — pick the next-best unconsumed bullet, or primary_match=0.
@@ -162,10 +174,13 @@ def get_done_titles(*files):
 
 # ======================== Parsing ========================
 
-# Target Module branch: only Target Module bullets are emitted/parsed; RQ is dropped.
-# Mirrors reward/task1_reward.py for code-level consistency.
+# Same regex shape as the reward server so eval bullet count matches reward
+# n_pairs telemetry. Leading bullet char is optional for model outputs that
+# emit "**Target Module:** ..." without a dash prefix.
 _TARGET_BULLET_RE = re.compile(
-    r'\n\s*[-*]\s*(?:\*\*)?Target Module(?:\*\*)?\s*:', re.IGNORECASE)
+    r'\n\s*(?:[-*]\s*)?(?:\*\*)?Target Module(?:\*\*)?\s*:', re.IGNORECASE)
+_RQ_BULLET_RE = re.compile(
+    r'\n\s*(?:[-*]\s*)?(?:\*\*)?Research Question(?:\*\*)?\s*:', re.IGNORECASE)
 
 
 def parse_gt_objectives(gt_candidates: str) -> List[str]:
@@ -179,10 +194,7 @@ def parse_gt_objectives(gt_candidates: str) -> List[str]:
 
 
 def parse_predicted_bullets(infer_response: str) -> List[Dict[str, str]]:
-    """Target Module: parse infer response into ordered Target Module bullets.
-    `research_question` is kept as an empty string for downstream schema
-    compatibility but is never consumed by the judge prompt below.
-    """
+    """Parse infer response into ordered (target_module, research_question) bullets."""
     if not infer_response:
         return []
     result_match = re.search(r'<Result>(.*?)(?:</Result>|$)', infer_response, re.DOTALL)
@@ -190,23 +202,27 @@ def parse_predicted_bullets(infer_response: str) -> List[Dict[str, str]]:
 
     text = "\n" + result_text
     tm_matches = list(_TARGET_BULLET_RE.finditer(text))
+    rq_matches = list(_RQ_BULLET_RE.finditer(text))
     bullets: List[Dict[str, str]] = []
     for i, tm in enumerate(tm_matches):
         tm_start = tm.end()
         next_tm_start = tm_matches[i + 1].start() if i + 1 < len(tm_matches) else len(text)
-        tm_text = text[tm_start:next_tm_start].strip().lstrip(":").strip().rstrip("*").strip()
-        if not tm_text:
+        rq_in_range = next((rq for rq in rq_matches if tm_start < rq.start() < next_tm_start), None)
+        if rq_in_range is None:
             continue
+        tm_text = text[tm_start:rq_in_range.start()].strip().lstrip(":").strip().rstrip("*").strip()
+        rq_text = text[rq_in_range.end():next_tm_start].strip().lstrip(":").strip().rstrip("*").strip()
+        if len(rq_text) > 400:
+            rq_text = rq_text[:400] + "..."
         bullets.append({
             "idx": len(bullets) + 1,
             "target_module": tm_text[:300],
-            "research_question": "",
+            "research_question": rq_text,
         })
     return bullets
 
 
 def format_pred_bullets(bullets: List[Dict[str, str]]) -> str:
-    """Target Module: only emit <target_module>; no <research_question> element."""
     if not bullets:
         return "(no parseable bullets in the generated result)"
     parts = []
@@ -214,6 +230,7 @@ def format_pred_bullets(bullets: List[Dict[str, str]]) -> str:
         parts.append(
             f'<bullet num="{b["idx"]}">\n'
             f'<target_module>{b["target_module"]}</target_module>\n'
+            f'<research_question>{b["research_question"]}</research_question>\n'
             f'</bullet>'
         )
     return "\n".join(parts)
@@ -294,16 +311,9 @@ def compute_match_rate(matches: List[Dict], n_gt: int) -> Optional[float]:
     return sum(m.get("score", 1.0) for m in matches) / n_gt
 
 
-# Count penalty is kept independent from the RL reward so evaluation remains a
-# stable comparator across runs.
-COUNT_PENALTY_TOLERANCE = 1
-COUNT_PENALTY_RATE = 0.05
-COUNT_PENALTY_CAP = 0.5
-
-
 def compute_count_penalty(n_pred: int, n_gt: int) -> float:
-    excess = max(0, n_pred - n_gt - COUNT_PENALTY_TOLERANCE)
-    return min(COUNT_PENALTY_CAP, excess * COUNT_PENALTY_RATE)
+    """Use the same GT-relative count penalty family as the v18.3 reward."""
+    return compute_count_penalty_v2_from_env(n_pred=n_pred, n_gt=n_gt)
 
 
 # ======================== Judge API ========================
@@ -494,7 +504,12 @@ def run_eval(input_file: str, output_file: str, fail_file: str, limit: int = 0):
     print(f"Total scored: {total_n} ({len(ok_results)} ok + {len(fail_results)} fail counted as 0)")
     print()
     print(f"  match_rate       = {avg_recall:.4f}   (raw recall, bipartite-enforced)")
-    print(f"  count_penalty    = {avg_pen:.4f}   (tol={COUNT_PENALTY_TOLERANCE}, rate={COUNT_PENALTY_RATE})")
+    print("  count_penalty    = "
+          f"{avg_pen:.4f}   "
+          f"(free_extra={os.environ.get('TASK1_COUNT_FREE_EXTRA', '1')}, "
+          f"soft={os.environ.get('TASK1_COUNT_SOFT_RATE', '0.005')}, "
+          f"hard_threshold={os.environ.get('TASK1_COUNT_HARD_THRESHOLD', '7')}, "
+          f"hard_rate={os.environ.get('TASK1_COUNT_HARD_RATE', '0.05')})")
     print(f"  adjusted_score   = {avg_adj:.4f}   ← main metric (recall - count_penalty)")
     if pred_counts:
         print()

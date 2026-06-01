@@ -1,22 +1,27 @@
 """
-Preprocess ABForge Task 1 RL data from JSONL to verl parquet.
-
-This script does not generate new data. It formats released JSONL records into
-the prompt/reward metadata columns expected by verl PPO/GRPO training and
-creates a train/validation split.
+Preprocess ABForge Task 1 RL data from jsonl to parquet.
 """
 
 import argparse
 import json
 import os
 import random
+import re
 from pathlib import Path
 from typing import Dict, List
 
 import datasets
 
 
-TASK1_USER_PROMPT = """You are an expert AI research scientist and a rigorous peer reviewer. Your task is to identify the key ablation research questions that should be investigated to rigorously validate a paper's central methodological claims.
+_INVESTIGATION_FOCUS_RE = re.compile(r"<Investigation_Focus>", re.IGNORECASE)
+
+
+def count_gt_focuses(record: Dict) -> int:
+    cs = record.get("Candidates", "") or ""
+    return len(_INVESTIGATION_FOCUS_RE.findall(cs))
+
+
+INFER_TASK1 = """You are an expert AI research scientist and a rigorous peer reviewer. Your task is to identify the key ablation research questions that should be investigated to rigorously validate a paper's central methodological claims.
 
 <Research_Context>
 (Paper context with ablation-related content removed)
@@ -33,20 +38,19 @@ TASK1_USER_PROMPT = """You are an expert AI research scientist and a rigorous pe
 **Important Constraints:**
 - Do not propose full experimental plans, datasets, hyperparameters, or exact protocols.
 - Prefer mechanistically meaningful and causally informative questions over superficial component toggles.
-- If a mechanism can be decomposed into multiple distinct causal factors, separate them explicitly.
+- Identify the 2-6 most critical ablation targets. Prioritize scientific necessity over completeness.
 
-**Output Format:**
+**Output Format:** Each bullet represents one atomic ablation target. Output the most scientifically necessary targets (typically 2-6).
 
 <Think>
 [A brief reasoning process explaining the most important scientific vulnerabilities and causal uncertainties.]
 </Think>
 
 <Result>
-[A list of target modules — the components, mechanisms, or design choices that should be probed by ablation. Output ONE bullet per atomic target.]
+[A list of target modules and their corresponding high-level research questions.]
 
 - Target Module: [Name of the component or design choice]
-- Target Module: [Name of the next component]
-- Target Module: [...]
+    - Research Question: [One precise sentence summarizing the exact hypothesis to test]
 </Result>"""
 
 
@@ -64,7 +68,7 @@ def load_jsonl(path: Path) -> List[Dict]:
 def build_prompt(content: str, max_content_chars: int) -> str:
     if max_content_chars > 0:
         content = content[:max_content_chars]
-    return TASK1_USER_PROMPT.replace("{CONTENT}", content)
+    return INFER_TASK1.replace("{CONTENT}", content)
 
 
 def convert_record(record: Dict, split: str, idx: int, max_content_chars: int) -> Dict:
@@ -99,6 +103,12 @@ def main():
     parser.add_argument("--val_size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_content_chars", type=int, default=50000)
+    parser.add_argument("--min_gt", type=int, default=1,
+                        help="Min GT Investigation_Focus count. Default 1.")
+    parser.add_argument("--max_gt", type=int, default=6,
+                        help="Max GT Investigation_Focus count. Default 6 — "
+                             "aligned with the 2-6 prompt constraint and the "
+                             "eval/reward count_penalty hard_cap.")
     args = parser.parse_args()
 
     input_path = Path(os.path.expanduser(args.input)).resolve()
@@ -106,6 +116,13 @@ def main():
     local_dir.mkdir(parents=True, exist_ok=True)
 
     records = load_jsonl(input_path)
+    n_total = len(records)
+    records = [r for r in records
+               if args.min_gt <= count_gt_focuses(r) <= args.max_gt]
+    n_filt = len(records)
+    print(f"GT filter [{args.min_gt}, {args.max_gt}]: {n_total} -> {n_filt} "
+          f"({100*n_filt/max(n_total,1):.1f}% kept)")
+
     rng = random.Random(args.seed)
     rng.shuffle(records)
 

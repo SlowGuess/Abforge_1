@@ -54,7 +54,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.critic_warmup=0 \
   trainer.logger="$LOGGER" \
   trainer.project_name="${PROJECT_NAME:-abforge_task1}" \
-  trainer.experiment_name="${EXPERIMENT_NAME:-qwen3_8b_grpo_task1}" \
+  trainer.experiment_name="${EXPERIMENT_NAME:-qwen3_8b_grpo_task1_v18_3}" \
   trainer.n_gpus_per_node="${N_GPUS_PER_NODE:-4}" \
   trainer.nnodes="${NNODES:-1}" \
   trainer.save_freq="${SAVE_FREQ:-50}" \

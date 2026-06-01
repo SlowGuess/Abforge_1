@@ -14,14 +14,18 @@ from openai import AsyncOpenAI
 logger = logging.getLogger("task1_reward")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-PARENT_DIR = Path(__file__).resolve().parent.parent
-if str(PARENT_DIR) not in sys.path:
-    sys.path.append(str(PARENT_DIR))
+REWARD_DIR = Path(__file__).resolve().parent
+PARENT_DIR = REWARD_DIR.parent
+for path in (REWARD_DIR, PARENT_DIR):
+    if str(path) not in sys.path:
+        sys.path.append(str(path))
 
 from task1_candidate_utils import (  # noqa: E402
     approx_token_count,
     coerce_extra_info,
+    compute_count_penalty_v2_from_env,
     compute_weighted_score,
+    compute_wt_p_recall,
     extract_result_block,
     parse_candidates,
 )
@@ -35,55 +39,61 @@ def use_binary_scoring() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _truthy_env(name: str) -> bool:
-    v = os.environ.get(name, "")
-    return str(v).strip().lower() in ("1", "true", "yes", "on")
-
-
-def rule_penalty_disabled() -> bool:
-    """Disable additive structural penalties for ablation studies.
-
-    The multiplicative format factor remains active because it gates
-    parseability rather than applying a soft penalty.
-    """
-    return _truthy_env("TASK1_DISABLE_RULE_PENALTY")
-
-
-# Task 1 scores a list of target modules/components that should be tested by
-# ablation. The judge compares each predicted target against paper-specific
-# ground-truth candidate focuses.
+# Structured bullet check (mirrors eval parser parse_predicted_objectives).
+# Substring match was easily gamed by placeholder lines like "[A list of target
+# modules and research questions.]", so we now require actual bullet headers:
+#   - Target Module: <name>
+#     - Research Question: <q>
+# Same regex shape as eval parser, so reward-pass and eval-parseable are aligned.
 _TARGET_BULLET_RE = re.compile(
     r'\n\s*[-*]\s*(?:\*\*)?Target Module(?:\*\*)?\s*:', re.IGNORECASE)
+_RQ_BULLET_RE = re.compile(
+    r'\n\s*[-*]\s*(?:\*\*)?Research Question(?:\*\*)?\s*:', re.IGNORECASE)
 
 
 def has_expected_format(result_text: str) -> bool:
     text = "\n" + (result_text or "")
-    return bool(_TARGET_BULLET_RE.search(text))
+    return bool(_TARGET_BULLET_RE.search(text)) and bool(_RQ_BULLET_RE.search(text))
 
 
 def count_objective_pairs(result_text: str) -> int:
-    """Count parseable Task 1 target bullets."""
+    """Count complete (Target Module, Research Question) bullet pairs.
+    A pair = matched bullet headers; we conservatively use min(n_tm, n_rq).
+    """
     text = "\n" + (result_text or "")
-    return len(_TARGET_BULLET_RE.findall(text))
+    n_tm = len(_TARGET_BULLET_RE.findall(text))
+    n_rq = len(_RQ_BULLET_RE.findall(text))
+    return min(n_tm, n_rq)
 
 
 def extract_numbered_bullets(result_text: str) -> List[Dict[str, Any]]:
-    """Parse Task 1 target bullets into ordered entries."""
+    """Parse result text into ordered (Target Module, Research Question) bullets.
+    Returns list of dicts with 1-based idx, target_module, research_question.
+
+    Used in v9 to: (1) number bullets in the judge prompt so the judge can pick a
+    primary_match by index, and (2) server-side enforce the consumed-once rule.
+    """
     if not result_text:
         return []
     text = "\n" + result_text
     tm_matches = list(_TARGET_BULLET_RE.finditer(text))
+    rq_matches = list(_RQ_BULLET_RE.finditer(text))
     bullets: List[Dict[str, Any]] = []
     for i, tm in enumerate(tm_matches):
         tm_start = tm.end()
         next_tm_start = tm_matches[i + 1].start() if i + 1 < len(tm_matches) else len(text)
-        tm_text = text[tm_start:next_tm_start].strip().lstrip(":").strip().rstrip("*").strip()
-        if not tm_text:
+        rq_in_range = next((rq for rq in rq_matches if tm_start < rq.start() < next_tm_start), None)
+        if rq_in_range is None:
             continue
+        tm_text = text[tm_start:rq_in_range.start()].strip().lstrip(":").strip().rstrip("*").strip()
+        rq_text = text[rq_in_range.end():next_tm_start].strip().lstrip(":").strip().rstrip("*").strip()
+        # Trim verbose RQ to keep judge prompt manageable.
+        if len(rq_text) > 400:
+            rq_text = rq_text[:400] + "..."
         bullets.append({
             "idx": len(bullets) + 1,
             "target_module": tm_text[:300],
-            "research_question": "",
+            "research_question": rq_text,
         })
     return bullets
 
@@ -92,12 +102,23 @@ def enforce_bipartite(
     eval_items: List[Dict[str, Any]],
     n_pred_bullets: int,
 ) -> Dict[str, Any]:
-    """Enforce one-to-one assignment between GT focuses and predicted bullets.
+    """v12 score-based 1:1 enforce. Reverses two prior failures:
 
-    When multiple GT focuses cite the same predicted bullet, only the
-    highest-scoring focus keeps the match; the rest are zeroed. This prevents a
-    single broad bullet from receiving credit for many distinct targets.
-    Mutates eval_items in place and returns telemetry.
+    v9 enforce_consumed_once was greedy by focus order — the first focus to
+    claim a bullet kept it, even if a LATER focus would have been a higher-
+    scoring match. This mis-zeroed legitimate matches.
+
+    v10/v11 detect_reuse was telemetry-only — judge soft-violated the 1:1
+    rule with impunity, inflating candidate_score (n_reuse_observed climbed
+    from 0.17 → 0.56 per sample over 100 steps).
+
+    v12 fix: when multiple focuses cite the same bullet, keep ONLY the
+    highest-scoring focus's pairing; the other focuses' scores are forced to
+    0.0. Tie-break: same score → earlier focus position wins. This is a
+    score-based local approximation to Hungarian 1:1 assignment; not optimal
+    but closes the math-level reuse hack discussed in v11 analysis.
+
+    Mutates eval_items in place. Returns telemetry dict.
     """
     # Group focuses by their primary_match bullet
     by_bullet: Dict[int, List[Any]] = {}
@@ -163,7 +184,23 @@ def _two_tier_overlong_penalty(token_count: int, t1: int, r1: float, t2: int, r2
 
 
 def compute_format_factor(raw_response: str, result_text: str) -> Dict[str, float]:
-    """Multiplicative parseability gate in [0, 1]."""
+    """v6 format gate: multiplicative factor in [0, 1].
+
+    v5's additive penalty (max 0.40) was too small relative to the [0, 1]
+    candidate_score range — a non-compliant rollout with high content still
+    out-scored a compliant rollout with mediocre content. Worse, the reward
+    server's `extract_result_block` falls back to EOS when `</Result>` is
+    missing, so the model still received content credit and learned that
+    closing tag is optional (v5 inference: 198/200 missing `</Result>`).
+
+    Multiplicative gate fixes this by zeroing content reward on hard
+    violations: missing close tag, missing open tag, or zero parseable
+    bullet pairs. Partial bullet compliance (n_pairs=1) gets factor=0.5.
+
+    Base Qwen3-8B already produces compliant format (verified 200/200 on
+    bench200), so factor=1.0 from the start of training — no gradient
+    explosion risk like v4's binary 0→0.25 additive shock.
+    """
     raw = raw_response or ""
     raw_lower = raw.lower()
     has_open = "<result>" in raw_lower
@@ -182,34 +219,22 @@ def compute_format_factor(raw_response: str, result_text: str) -> Dict[str, floa
 
 
 def compute_count_penalty(n_pred: int, n_gt: int) -> float:
-    """Progressive penalty for predicting too many targets.
+    """GT-relative count penalty (v18.3). Delegates to compute_count_penalty_v2_from_env.
 
-    The first excess targets are cheap, while later excess targets cost more.
-    This discourages broad over-generation without forcing a fixed number of
-    predictions for every paper.
+    n_pred ≤ n_gt + TASK1_COUNT_FREE_EXTRA: no penalty.
+    n_gt + TASK1_COUNT_FREE_EXTRA < n_pred ≤ TASK1_COUNT_HARD_THRESHOLD (default 7):
+        TASK1_COUNT_SOFT_RATE per excess.
+    n_pred > TASK1_COUNT_HARD_THRESHOLD: soft zone penalty + TASK1_COUNT_HARD_RATE per further excess.
+
+    Env vars: TASK1_COUNT_SOFT_RATE (0.005), TASK1_COUNT_HARD_THRESHOLD (7),
+              TASK1_COUNT_HARD_RATE (0.05), TASK1_COUNT_CAP (0.5),
+              TASK1_COUNT_FREE_EXTRA (1).
     """
-    if rule_penalty_disabled():
-        return 0.0
-    tol = int(os.environ.get("TASK1_COUNT_TOL", "2"))
-    base_rate = float(os.environ.get("TASK1_COUNT_BASE_RATE", "0.02"))
-    step = float(os.environ.get("TASK1_COUNT_STEP", "0.01"))
-    cap = float(os.environ.get("TASK1_COUNT_CAP", "0.5"))
-    excess = max(0, int(n_pred) - int(n_gt) - tol)
-    if excess <= 0:
-        return 0.0
-    pen = sum(base_rate + step * (i - 1) for i in range(1, excess + 1))
-    return min(cap, pen)
+    return compute_count_penalty_v2_from_env(n_pred, n_gt)
 
 
 def compute_rule_penalty(raw_response: str, result_text: str) -> Dict[str, float]:
     raw = raw_response or ""
-
-    if rule_penalty_disabled():
-        return {
-            "length_penalty": 0.0,
-            "token_count": float(approx_token_count(result_text)),
-            "total_token_count": float(approx_token_count(raw)),
-        }
 
     # Result-block length penalty (two tiers, additive per 100 tokens).
     res_t1 = int(os.environ.get("TASK1_LENGTH_THRESHOLD", "768"))
@@ -239,18 +264,59 @@ def compute_rule_penalty(raw_response: str, result_text: str) -> Dict[str, float
     }
 
 
+def _extract_full_rq_word_counts(result_text: str) -> List[int]:
+    """Re-parse result_text and return word counts of each Research Question body
+    WITHOUT the 400-char truncation that extract_numbered_bullets applies.
+    Used by compute_rq_verbosity_penalty so verbose RQ stuffing is detected
+    at its true length.
+    """
+    if not result_text:
+        return []
+    text = "\n" + result_text
+    tm_matches = list(_TARGET_BULLET_RE.finditer(text))
+    rq_matches = list(_RQ_BULLET_RE.finditer(text))
+    counts = []
+    for i, tm in enumerate(tm_matches):
+        next_tm_start = tm_matches[i + 1].start() if i + 1 < len(tm_matches) else len(text)
+        rq_in_range = next((rq for rq in rq_matches if tm.end() < rq.start() < next_tm_start), None)
+        if rq_in_range is None:
+            continue
+        rq_body = text[rq_in_range.end():next_tm_start]
+        counts.append(len(rq_body.split()))
+    return counts
+
+
 def compute_rq_verbosity_penalty(result_text: str) -> Dict[str, float]:
-    """Compatibility no-op for older reward aggregation fields."""
+    """v11 per-bullet RQ verbosity penalty. Counters the "umbrella TM + verbose
+    RQ stuffed with keywords" hack discovered in v10: bullets with broad TM names
+    were writing 200-300 word RQs enumerating many keywords, causing the judge
+    to award hierarchical-partial 0.5 on focus keyword overlap. Penalizing
+    per-bullet RQ length encourages concise atomic ablation questions.
+
+    Per bullet: if RQ exceeds threshold words, subtract a rate per 50 excess words.
+    Sum across bullets, cap at TASK1_RQ_VERBOSITY_CAP.
+    """
+    threshold = int(os.environ.get("TASK1_RQ_VERBOSITY_THRESHOLD", "80"))
+    rate = float(os.environ.get("TASK1_RQ_VERBOSITY_RATE", "0.05"))
+    cap = float(os.environ.get("TASK1_RQ_VERBOSITY_CAP", "0.3"))
+
+    rq_words_list = _extract_full_rq_word_counts(result_text)
+    total_penalty = 0.0
+    for rq_words in rq_words_list:
+        excess = max(0, rq_words - threshold)
+        total_penalty += (excess / 50.0) * rate
+    capped = min(cap, total_penalty)
+    mean_rq_words = (sum(rq_words_list) / len(rq_words_list)) if rq_words_list else 0.0
+    max_rq_words = max(rq_words_list) if rq_words_list else 0
     return {
-        "rq_verbosity_penalty": 0.0,
-        "rq_verbosity_raw": 0.0,
-        "rq_words_mean": 0.0,
-        "rq_words_max": 0.0,
+        "rq_verbosity_penalty": float(capped),
+        "rq_verbosity_raw": float(total_penalty),
+        "rq_words_mean": float(mean_rq_words),
+        "rq_words_max": float(max_rq_words),
     }
 
 
-# Duplicate-bullet detection for outputs that repeat the same component with
-# slightly different wording.
+# v16 doubling penalty — server-side detection of duplicate bullets in same paper
 _DOUBLING_STOP = {
     'strategy','design','method','approach','framework','mechanism','protocol','system',
     'pipeline','algorithm','technique','procedure','evaluation','analysis','assessment',
@@ -288,7 +354,15 @@ def _doubling_normalize(tm: str) -> str:
 
 
 def _is_doubling_pair(tm_a: str, tm_b: str, threshold: float) -> bool:
-    """Detect duplicate target bullets by containment or high word overlap."""
+    """Two-rule duplicate detection (v2 heuristic, validated at threshold=0.7
+    on 22 hand-curated cases: precision 100%, recall 83% — no false positives
+    on legitimate atomic decompositions like encoder/decoder, self/cross-attn,
+    short-term/long-term memory, BiasNorm/LayerNorm).
+
+    Rule 1: substring containment after normalization (both sides ≥8 chars).
+    Rule 2: word-overlap ratio > threshold AND |overlap| >= 2 (filters single-
+            word coincidence like shared 'image' / 'memory' / 'data').
+    """
     na = _doubling_normalize(tm_a)
     nb = _doubling_normalize(tm_b)
     if len(na) >= 8 and len(nb) >= 8 and (na in nb or nb in na):
@@ -304,14 +378,20 @@ def _is_doubling_pair(tm_a: str, tm_b: str, threshold: float) -> bool:
 
 
 def compute_doubling_penalty(result_text: str) -> Dict[str, float]:
-    """Penalize multiple bullets that cover the same paper component."""
-    if rule_penalty_disabled():
-        return {
-            "doubling_penalty": 0.0,
-            "n_doubles": 0,
-            "doubling_examples": [],
-        }
+    """v16 doubling penalty — penalize models that write multiple bullets
+    covering the same paper component with different phrasing/sub-aspects.
 
+    The bipartite-enforce already zeros reuse on the GT side, but doesn't
+    discourage writing duplicates in the first place — model can write 5
+    bullets including 1 duplicate pair, lose the duplicate on bipartite but
+    keep the other 4. v16 adds a flat per-pair penalty to discourage this.
+
+    Implementation walks bullets in order; each later bullet that duplicates
+    an earlier (per _is_doubling_pair) accrues penalty. v18: rate per pair
+    raised 0.05 → 0.06 to offset the softer v18 count_penalty (which had let
+    doubling regress from v16's 2% to v17's 6.1% — multi-bullet became net
+    positive again under v17 count_penalty=0.01 base). cap = 0.20.
+    """
     threshold = float(os.environ.get("TASK1_DOUBLING_THRESHOLD", "0.7"))
     rate = float(os.environ.get("TASK1_DOUBLING_RATE", "0.06"))
     cap = float(os.environ.get("TASK1_DOUBLING_CAP", "0.20"))
@@ -361,9 +441,9 @@ def create_evaluation_prompt(
         ]
     )
 
-    # Target Module: pre-parse bullets and present with integer indices. RQ field
-    # is dropped — the judge has only Target Module text + Paper Context to
-    # match against GT Reference Focuses.
+    # v9: pre-parse the model's bullets and present them with explicit indices so
+    # the judge can identify the primary_match by integer ID. This is the input
+    # side of the server-side consumed-once enforcement.
     bullets = extract_numbered_bullets(generated_result)
     if bullets:
         bullets_block = "\n".join(
@@ -371,6 +451,7 @@ def create_evaluation_prompt(
                 (
                     f'<bullet num="{b["idx"]}">\n'
                     f'<target_module>{b["target_module"]}</target_module>\n'
+                    f'<research_question>{b["research_question"]}</research_question>\n'
                     f'</bullet>'
                 )
                 for b in bullets
@@ -407,36 +488,48 @@ EVALUATION PROCEDURE:
   Process the reference focuses 1..N IN ORDER. For each focus:
     1. Read the focus.
     2. Look at the UNCONSUMED candidate bullets (bullets not yet cited as primary_match by an earlier focus).
-    3. For each candidate, judge whether its Target Module addresses the same atomic ablation as the focus, using the Paper_Context to disambiguate when the TM heading is short.
+    3. For each candidate, judge whether its (Target Module + Research Question) addresses the same atomic ablation as the focus.
     4. Assign the score 0 / 0.5 / 1.0 per the rubric below. Record the bullet's integer ID in <primary_match> (or 0 if no bullet qualifies).
     5. A bullet picked as primary_match for the current focus is CONSUMED — do NOT cite it for any later focus.
 
 ATOMIC ABLATION means: a single specific paper-introduced method, component, design choice, or experimental contrast (e.g., "Beam search width", "Prototype Attentive Module", "BiasNorm vs LayerNorm", "L_adv + L_unsup joint loss"). NOT a combo of abstract categories.
 
-TASK 1 MATCHING: Each bullet is a Target Module heading. Match by whether the heading names the same atomic ablation as the focus. Use the Paper_Context to resolve ambiguity when the phrasing is broad.
+DUAL SIGNAL: Use BOTH the bullet's Target Module heading AND its Research Question text. TM tells you the bullet's main subject; RQ confirms (or disconfirms) it engages the focus's actual experimental concern. A bullet earns credit only when TM + RQ together point to the focus.
 
-SCORING:
+SCORING (v18 — tightened 0.5 + same-component 1.0):
 
-  1.0 — DEDICATED ATOMIC MATCH
-        TM clearly names the same atomic ablation as the focus. Phrasing differences are fine (still 1.0):
-          • synonymous verbs ("necessity" ≈ "contribution" ≈ "effect" ≈ "with-vs-without")
-          • TM atomizes a single-component focus (Example: focus="Effect of beam width on translation" ←→ TM="Beam search width" → 1.0)
-          • Comparison atomization: focus="A vs B" is ONE experiment; a bullet naming A, naming B, or naming the contrast all score 1.0.
-            (Example: focus="LoRA vs Fully Fine-tuning" ←→ TM="LoRA fine-tuning" → 1.0)
-          • Joint composite: focus names X AND Y as a paper-joint ablation, TM names BOTH.
-            (Example: focus="L_adv and L_unsup loss design" ←→ TM="L_adv + L_unsup joint loss" → 1.0)
+  1.0 — ATOMIC MATCH ON SAME PAPER COMPONENT
+        Award 1.0 in ANY of these cases (component identity matters more than verb identity):
+          • DIRECT MATCH: TM clearly names the same atomic ablation as the focus AND RQ confirms the same experimental concern. Synonymous verbs are fine ("necessity" ≈ "contribution" ≈ "effect" ≈ "with-vs-without").
+          • SINGLE-COMPONENT ATOMIZATION
+            (Ex: focus="Effect of beam width on translation" ←→ TM="Beam search width" → 1.0)
+          • COMPARISON ATOMIZATION: focus="A vs B" is ONE experiment; a bullet naming A, naming B, or naming the contrast all score 1.0.
+            (Ex: focus="LoRA vs Fully Fine-tuning" ←→ TM="LoRA fine-tuning" with RQ about replacing full FT → 1.0)
+          • JOINT COMPOSITE: focus names X AND Y as a paper-joint ablation, TM names BOTH.
+            (Ex: focus="L_adv and L_unsup loss design" ←→ TM="L_adv + L_unsup joint loss" → 1.0)
+          • SAME COMPONENT, DIFFERENT VALID ANGLE (v18 — NEW):
+            TM names the same paper-specific component/mechanism as the focus, AND the RQ probes a different but legitimate experimental angle on that same component (sensitivity ↔ robustness ↔ necessity ↔ magnitude). The bullet must be testing the same paper artifact, just from another direction.
+            (Ex: focus="Effect of Reference Corpus Size on NPM" ←→ TM="Reference Corpus Invariance" with RQ asking if model adapts when corpus is swapped → 1.0, because both ablate the reference corpus.)
+            CONSTRAINT: This rule applies ONLY when the component is paper-specific (named module / mechanism / design choice). It does NOT promote generic-category bullets — "Encoder Architecture" or "Loss Function" cannot use this rule.
 
-  0.5 — NEAR-1.0 WITH MINOR PHRASING FLAW (USE SPARINGLY)
-        Reserve for cases where you have HIGH CONFIDENCE the bullet is about the SAME atomic ablation as the focus, but the TM heading has a small imperfection:
-          • TM is slightly broader/vaguer in wording than the focus, BUT in the Paper_Context this TM uniquely maps to the focus's experimental concern.
-            (Example: focus="Effect of beam width on translation" ←→ TM="Decoding parameter tuning" where the paper only varies beam width → 0.5)
-          • TM names only ONE side of a TRUE joint ablation OR ONE side of a TRUE comparison.
-            (Example: focus="Contribution of L_adv and L_unsup joint loss" ←→ TM="Adversarial loss" → 0.5)
+  0.5 — RESCUED MATCH (v18 — TIGHTENED, USE SPARINGLY)
+        HARD PREREQUISITE: at least one of TM or RQ MUST mention a paper-specific term that the focus also references (a named module, mechanism, design choice, or technical detail visible in the focus or its description). If the bullet is generic enough to appear unchanged in any ML paper, score 0 — NOT 0.5. RQ keyword overlap with the focus alone is NOT sufficient — there must be paper-specific anchoring.
 
-        CRITICAL — 0.5 is closer to 1.0 than to 0. Give 0.5 only when you would give 1.0 if the TM phrasing were slightly cleaner. When in doubt:
-          • If the TM does NOT uniquely point to the focus's concern (under Paper_Context) → score 0, NOT 0.5.
-          • If the TM is a GENERIC UMBRELLA (see 0.0 (a) below) → score 0.
-          • Do NOT use 0.5 for "topically related" / "different framing" / "higher abstraction" / "adjacent question" — those are 0.
+        Award 0.5 in the following cases (prereq must hold first):
+
+        Case A — Vague TM rescued by precise RQ:
+          TM is broader/vaguer than the focus, BUT the RQ contains a paper-specific term that locks the bullet to the focus's atomic concern.
+          (Ex: focus="Effect of beam width" ←→ TM="Decoding parameter tuning" with RQ explicitly varying beam width on the paper's decoder → 0.5)
+
+        Case B — Precise TM but generic RQ (v18 — NEW):
+          TM exactly names the focus's paper-specific component, BUT the RQ is a generic template ("Is X critical for performance?" / "Does X improve results?") that adds no paper-specific detail beyond what the TM already says. The bullet shows it knows what to ablate but not how.
+          (Ex: focus="MMD-based feature drift constraint" ←→ TM="MMD-based feature drift constraint" with RQ="Is the MMD constraint critical for performance?" → 0.5, because TM nails the component but RQ contributes no additional paper-specific anchor.)
+
+        Case C — One side of TRUE joint/comparison:
+          TM names ONE side of a TRUE joint ablation OR ONE side of a TRUE comparison, AND the RQ confirms the bullet IS engaging the focus's experimental point.
+          (Ex: focus="Contribution of L_adv and L_unsup joint loss" ←→ TM="Adversarial loss" with RQ about removing GAN loss only → 0.5)
+
+        Do NOT use 0.5 for "topically related" / "different aspect" / "higher abstraction" / "adjacent question" — those are 0.
 
   0.0 — NO MATCH. Apply 0 if ANY hold:
 
@@ -451,22 +544,48 @@ SCORING:
 
     (b) The focus appears only inside a parenthetical enumeration "(e.g., A, B, ...)" of a bullet whose TM is about a different topic.
 
-    (c) No unconsumed bullet specifically addresses the focus.
+    (c) No unconsumed bullet specifically addresses the focus (different aspect / different component / vague catchall listing many components).
+
+    (d) PURE PARAPHRASE (v18 — NEW): Both TM and RQ use only generic-category phrasings that could appear in many ML papers, even if topically aligned with the focus. There is no paper-specific anchor in either field — score 0, not 0.5.
 
 SERVER-SIDE 1:1 ENFORCEMENT (safety net):
   Server enforces 1:1 by score. If you cite the same bullet for two focuses, server keeps the higher-scoring focus and zeros the other. Follow the procedure above strictly to avoid this — pick the next-best unconsumed bullet (or primary_match=0).
 
+============================================================
+SECTION B — PER-BULLET SPECIFICITY (v18.1 precision input)
+============================================================
+After scoring all focuses above, score each generated bullet ONCE for paper-specificity, INDEPENDENT of whether it matched any focus. Evaluate the (TM, RQ) pair as a unit:
+
+  1.0 — SPECIFIC & VALID
+        TM names a concrete paper-specific component/mechanism/design choice identifiable in <Paper_Context> (NOT a generic category like "Training Objective", "Encoder", "Attention Module"). RQ asks a meaningful non-trivial question about it.
+
+  0.5 — RQ REDEEMS GENERIC TM
+        TM uses a generic category-level name, BUT the RQ contains paper-specific technical terms that unambiguously identify which exact mechanism is being targeted (effectively supplying the specificity the TM lacks). The RQ must reference a concrete paper detail, not merely be detailed/wordy.
+
+  0.0 — GENERIC OR INVALID
+        Either: (i) both TM and RQ use generic language applicable to any ML paper; (ii) TM is a category name AND RQ fails to identify the specific mechanism; or (iii) the prediction is irrelevant to the paper's methodology.
+
+When in doubt between 0.5 and 0.0, choose 0.0.
+
 Output Format:
 <Evaluation>
 <candidate num="1">
-<critique>Brief: which bullet is the match (cite TM heading and Paper_Context evidence) and why (or why none).</critique>
+<critique>Brief: which bullet is the match (cite TM + RQ evidence) and why (or why none).</critique>
 <primary_match>integer bullet ID, or 0 if no match</primary_match>
 <score>{score_format}</score>
 </candidate>
 ...
 </Evaluation>
 
-Return only the XML.
+<Bullet_Specificity>
+<bullet num="1">
+<spec_reason>One sentence: paper-specific anchor (or its absence) in TM and/or RQ.</spec_reason>
+<spec_score>{score_format}</spec_score>
+</bullet>
+...
+</Bullet_Specificity>
+
+Return only the XML — both blocks.
 """
 
 
@@ -535,6 +654,42 @@ def parse_eval_response(response: str, candidate_items: List[Dict[str, Any]]) ->
             }
         )
     return results
+
+
+def parse_bullet_specificity(response: str, n_bullets: int) -> Dict[int, float]:
+    """Extract per-bullet specificity scores from <Bullet_Specificity> block.
+
+    Returns a dict {bullet_id (1-indexed): score in {0.0, 0.5, 1.0}}.
+    Missing bullets default to 1.0 to avoid wt(P) regression when the judge
+    forgets the block — caller should treat None vs 1.0 as ambiguous.
+    """
+    text = response or ""
+    out: Dict[int, float] = {}
+    block_match = re.search(
+        r"<\s*Bullet_Specificity\s*>(.*?)</\s*Bullet_Specificity\s*>",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    block = block_match.group(1) if block_match else text  # fall back to whole text
+
+    for idx in range(1, n_bullets + 1):
+        pattern = (
+            rf'<\s*bullet\b[^>]*(?:num|number|id)\s*=\s*["\']?\s*{idx}\s*["\']?[^>]*>'
+            rf'(.*?)</\s*bullet\s*>'
+        )
+        m = re.search(pattern, block, re.DOTALL | re.IGNORECASE)
+        if not m:
+            continue
+        sm = re.search(
+            r"<\s*spec_score\s*>(.*?)</\s*spec_score\s*>",
+            m.group(1),
+            re.DOTALL | re.IGNORECASE,
+        )
+        if sm:
+            sc = parse_score(sm.group(1).strip())
+            if sc is not None:
+                out[idx] = sc
+    return out
 
 
 _judge_client: Optional[AsyncOpenAI] = None
@@ -692,13 +847,23 @@ async def build_reward_response(raw_request: Dict[str, Any]) -> Dict[str, Any]:
 
     fmt = compute_format_factor(raw_response=raw_response, result_text=result_text)
 
-    # Enforce one-to-one matching before aggregation: when multiple focuses cite
-    # the same bullet, only the highest-scoring focus keeps the match.
+    # v12: score-based 1:1 bipartite enforce. When multiple focuses cite the
+    # same bullet as primary_match, keep only the highest-scoring focus; the
+    # other re-citations are zeroed BEFORE weighted_score aggregation. This is
+    # the structural fix for the "reuse + umbrella + multi-version" hack stack
+    # discovered in v7-v11. Replaces v9 order-greedy enforce and v10/v11
+    # telemetry-only no-op.
     reuse_stats = enforce_bipartite(eval_items, n_pred_bullets=int(fmt["n_pairs"]))
 
-    candidate_score = compute_weighted_score(eval_items)
+    # v18.1: parse per-bullet specificity and compute wt(P) recall as the main
+    # candidate score. Plain recall is kept as a secondary telemetry field.
+    bullet_spec = parse_bullet_specificity(raw_judge_output, n_bullets=int(fmt["n_pairs"]))
+    candidate_score_plain = compute_weighted_score(eval_items)
+    candidate_score = compute_wt_p_recall(eval_items, bullet_spec)
     if candidate_score is None:
         candidate_score = 0.0
+    if candidate_score_plain is None:
+        candidate_score_plain = 0.0
     penalties = compute_rule_penalty(raw_response=raw_response, result_text=result_text)
     rq_verb = compute_rq_verbosity_penalty(result_text=result_text)
     doubling = compute_doubling_penalty(result_text=result_text)
@@ -716,6 +881,7 @@ async def build_reward_response(raw_request: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "score": total_score,
         "candidate_score": float(candidate_score),
+        "candidate_score_plain": float(candidate_score_plain),
         "format_factor": fmt["factor"],
         "format_reason": fmt["reason"],
         "n_pairs": fmt["n_pairs"],
@@ -733,7 +899,9 @@ async def build_reward_response(raw_request: Dict[str, Any]) -> Dict[str, Any]:
         "n_reuse_observed": reuse_stats["n_reuse_observed"],
         "n_reuse_zeroed": reuse_stats["n_reuse_zeroed"],
         "n_bullets_used": reuse_stats["n_bullets_used"],
+        "n_bullet_spec_missing": int(fmt["n_pairs"]) - len(bullet_spec),
         "eval_items": eval_items,
+        "bullet_spec": bullet_spec,
         "raw_judge_output": raw_judge_output,
     }
 
@@ -753,5 +921,5 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("TASK1_REWARD_PORT", "6013"))
+    port = int(os.environ.get("TASK1_REWARD_PORT", os.environ.get("TASK1_AZURE_REWARD_PORT", "6013")))
     uvicorn.run(app, host="0.0.0.0", port=port)
