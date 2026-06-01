@@ -33,7 +33,7 @@ Then convert the training files to parquet:
 ```bash
 python dataprocess/prepare_sft.py \
   --task 1 \
-  --sft_data_path data/train/sft_task1_39051_rq_filt2_6.jsonl \
+  --sft_data_path data/train/sft_task1_45961.jsonl \
   --sft_remain_path data/train/sft_raw_pool_52813.jsonl \
   --local_dir data/abforge_task1_sft
 
@@ -44,7 +44,7 @@ python dataprocess/prepare_sft.py \
   --local_dir data/abforge_task2_sft
 
 python dataprocess/prepare_task1_rl.py \
-  --input data/train/rl_task1_25479_filt2_6.jsonl \
+  --input data/train/rl_task1_30000.jsonl \
   --local_dir data/abforge_task1_rl
 
 python dataprocess/prepare_task2_rl.py \
