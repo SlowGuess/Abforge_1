@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import random
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -44,20 +45,19 @@ TASK1_USER_PROMPT = """You are an expert AI research scientist and a rigorous pe
 **Important Constraints:**
 - Do not propose full experimental plans, datasets, hyperparameters, or exact protocols.
 - Prefer mechanistically meaningful and causally informative questions over superficial component toggles.
-- If a mechanism can be decomposed into multiple distinct causal factors, separate them explicitly.
+- Identify the 2-6 most critical ablation targets. Prioritize scientific necessity over completeness.
 
-**Output Format:**
+**Output Format:** Each bullet represents one atomic ablation target. Output the most scientifically necessary targets (typically 2-6).
 
 <Think>
 [A brief reasoning process explaining the most important scientific vulnerabilities and causal uncertainties.]
 </Think>
 
 <Result>
-[A list of target modules — the components, mechanisms, or design choices that should be probed by ablation. Output ONE bullet per atomic target.]
+[A list of target modules and their corresponding high-level research questions.]
 
 - Target Module: [Name of the component or design choice]
-- Target Module: [Name of the next component]
-- Target Module: [...]
+    - Research Question: [One precise sentence summarizing the exact hypothesis to test]
 </Result>"""
 
 
@@ -124,6 +124,13 @@ def load_jsonl(path: Path) -> List[Dict]:
             if line:
                 out.append(json.loads(line))
     return out
+
+
+_INVESTIGATION_FOCUS_RE = re.compile(r"<Investigation_Focus>", re.IGNORECASE)
+
+
+def count_gt_focuses(record: Dict) -> int:
+    return len(_INVESTIGATION_FOCUS_RE.findall(record.get("Candidates", "") or ""))
 
 
 def paper_key(record: Dict) -> str:
@@ -204,6 +211,10 @@ def main() -> None:
     )
     parser.add_argument("--min_think_tokens", type=int, default=100)
     parser.add_argument("--min_result_tokens", type=int, default=50)
+    parser.add_argument("--task1_min_gt", type=int, default=2,
+                        help="For Task 1 only: keep records with at least this many GT focuses.")
+    parser.add_argument("--task1_max_gt", type=int, default=6,
+                        help="For Task 1 only: keep records with at most this many GT focuses.")
     args = parser.parse_args()
 
     cfg = TASK_CFG[args.task]
@@ -261,6 +272,14 @@ def main() -> None:
         if not b:
             stats["miss_join"] += 1
             continue
+        if args.task == 1:
+            n_gt = count_gt_focuses(b)
+            if n_gt < args.task1_min_gt:
+                stats["gt_too_few"] = stats.get("gt_too_few", 0) + 1
+                continue
+            if n_gt > args.task1_max_gt:
+                stats["gt_too_many"] = stats.get("gt_too_many", 0) + 1
+                continue
         think = a.get(cfg["think_field"], "") or ""
         result = a.get(cfg["result_field"], "") or ""
         if not think or not result:

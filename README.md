@@ -33,7 +33,7 @@ Then convert the training files to parquet:
 ```bash
 python dataprocess/prepare_sft.py \
   --task 1 \
-  --sft_data_path data/train/sft_task1_45961.jsonl \
+  --sft_data_path data/train/sft_task1_39051_rq_filt2_6.jsonl \
   --sft_remain_path data/train/sft_raw_pool_52813.jsonl \
   --local_dir data/abforge_task1_sft
 
@@ -44,7 +44,7 @@ python dataprocess/prepare_sft.py \
   --local_dir data/abforge_task2_sft
 
 python dataprocess/prepare_task1_rl.py \
-  --input data/train/rl_task1_30000.jsonl \
+  --input data/train/rl_task1_25479_filt2_6.jsonl \
   --local_dir data/abforge_task1_rl
 
 python dataprocess/prepare_task2_rl.py \
@@ -52,9 +52,14 @@ python dataprocess/prepare_task2_rl.py \
   --local_dir data/abforge_task2_rl
 ```
 
-The held-out evaluation files are under `data/eval/`.
+The held-out evaluation files are under `data/eval/`. Use
+`ablationbench_1000_rubric_v2.jsonl` for the full rubric-v2 benchmark and
+`ablationbench_200_rubric_v2.jsonl` for the clean 200-instance subset.
 
-Task 1 RL/eval defaults use the v18.3 count penalty: one free extra bullet above GT, soft penalty 0.005 up to 7 bullets, and hard penalty 0.05 beyond 7. Override with `TASK1_COUNT_*` environment variables when needed.
+Task 1 SFT/RL preprocessing keeps papers with 2-6 GT focuses by default. Task
+1 RL/eval defaults use the v18.3 count penalty: one free extra bullet above GT,
+soft penalty 0.005 up to 7 bullets, and hard penalty 0.05 beyond 7. Override
+with `TASK1_COUNT_*` environment variables when needed.
 
 ## SFT
 

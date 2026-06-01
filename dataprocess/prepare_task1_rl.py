@@ -103,8 +103,8 @@ def main():
     parser.add_argument("--val_size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_content_chars", type=int, default=50000)
-    parser.add_argument("--min_gt", type=int, default=1,
-                        help="Min GT Investigation_Focus count. Default 1.")
+    parser.add_argument("--min_gt", type=int, default=2,
+                        help="Min GT Investigation_Focus count. Default 2.")
     parser.add_argument("--max_gt", type=int, default=6,
                         help="Max GT Investigation_Focus count. Default 6 — "
                              "aligned with the 2-6 prompt constraint and the "
