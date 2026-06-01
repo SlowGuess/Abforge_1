@@ -9,7 +9,7 @@ reward/task1_reward.py. Differences vs. the RL reward judge are intentional:
   * judge output is JSON instead of per-candidate XML
   * server-side enforce_bipartite is reproduced post-hoc in parse_match_response
     (score-desc + gt-asc → 1:1 dedup)
-  * count_penalty parameters are kept independent of the RL reward (see below)
+  * count_penalty is reported only as a diagnostic
 
 Scoring rubric:
   * 1.0 — DEDICATED ATOMIC MATCH (includes comparison atomization and joint
@@ -17,6 +17,12 @@ Scoring rubric:
   * 0.5 — NEAR-1.0 WITH MINOR PHRASING FLAW.
   * 0.0 — NO MATCH (umbrella target / parenthetical-only mention / no unconsumed
           bullet addresses the focus / vague catchall / different aspect)
+
+The reported final score is:
+  100 * (R + 0.5 * (P_spec - 0.70))
+
+where R is bipartite-enforced recall over reference focuses, and P_spec is the
+mean paper-specific validity score over generated bullets.
 
 Usage:
     JUDGE_API_BASE=https://api.openai.com/v1 JUDGE_API_KEY=... JUDGE_MODEL=... \
@@ -46,6 +52,7 @@ from task1_candidate_utils import compute_count_penalty_v2_from_env  # noqa: E40
 # ======================== Config ========================
 JUDGE_TIMEOUT = 300
 WORKERS = 3
+SPECIFICITY_BASELINE = 0.70
 
 JUDGE_MODEL: Optional[str] = None
 JUDGE_CLIENT: Optional[OpenAI] = None
@@ -69,6 +76,11 @@ EVAL_PROMPT = """You are a rigorous scientific reviewer evaluating ablation obje
 <Generated_Bullets>
 {PRED_OBJECTIVES}
 </Generated_Bullets>
+
+You will evaluate two quantities:
+  1. RECALL: how well generated bullets cover the reference focuses.
+  2. PREDICTED-BULLET SPECIFICITY: whether each generated bullet is a valid,
+     paper-specific ablation target rather than a generic template.
 
 EVALUATION PROCEDURE:
   Process the reference focuses 1..N IN ORDER. For each focus:
@@ -124,6 +136,24 @@ SCORING (v18 — tightened 0.5 + same-component 1.0):
 
     (d) (v18) PURE PARAPHRASE: Both TM and RQ use only generic-category phrasings that could appear in many ML papers, even if topically aligned with the focus. There is no paper-specific anchor in either field — score 0, not 0.5.
 
+PREDICTED-BULLET SPECIFICITY:
+  Score EACH generated bullet independently of whether it matched a reference focus.
+  Use the bullet's Target Module and Research Question together.
+
+  1.0 — PAPER-SPECIFIC AND VALID
+        TM names a concrete paper-introduced module, method, design choice,
+        loss term, contrast, dataset construction, algorithmic step, or other
+        specific ablation target, and RQ asks a meaningful experiment about it.
+
+  0.5 — PARTLY SPECIFIC
+        One field is generic, but the other field anchors the bullet to a
+        concrete paper-specific component or technical detail.
+
+  0.0 — GENERIC OR INVALID
+        The bullet could be reused unchanged for many ML papers, combines broad
+        umbrella categories, lacks a meaningful ablation target, or asks a
+        malformed/non-experimental question.
+
 1:1 ENFORCEMENT (post-hoc by evaluator):
   After your scoring, the evaluator script keeps each bullet's pairing only with the HIGHEST-scoring focus (tie-break: earlier focus wins). If you cite the same bullet for two focuses, the lower-scoring focus will be zeroed. Follow the procedure above strictly — pick the next-best unconsumed bullet, or primary_match=0.
 
@@ -133,7 +163,11 @@ SCORING (v18 — tightened 0.5 + same-component 1.0):
     {{"gt_id": 1, "primary_match": 3, "score": 1.0,
       "reason": "<one sentence: cite TM + RQ evidence and why this score>"}}
   ],
-  "unmatched_gt": [2]
+  "unmatched_gt": [2],
+  "bullet_scores": [
+    {{"bullet_id": 1, "score": 1.0,
+      "reason": "<one sentence explaining paper-specific validity>"}}
+  ]
 }}"""
 
 
@@ -237,7 +271,7 @@ def format_pred_bullets(bullets: List[Dict[str, str]]) -> str:
 
 
 def parse_match_response(response: str, n_gt: int, n_pred: int) -> Dict:
-    """Parse judge JSON and apply bipartite 1:1 enforce (score-desc + gt-asc).
+    """Parse judge JSON, recall matches, and generated-bullet specificity.
 
     Mirrors reward/task1_reward.py:enforce_bipartite — when two
     focuses cite the same bullet, keep the higher-scoring focus; tie-break by
@@ -302,6 +336,44 @@ def parse_match_response(response: str, n_gt: int, n_pred: int) -> Dict:
     # Re-sort matches by gt_id for stable downstream presentation.
     valid.sort(key=lambda x: x["gt_id"])
     result["matches"] = valid
+
+    raw_bullet_scores = result.get("bullet_scores") or result.get("pred_scores") or []
+    bullet_score_map: Dict[int, Dict] = {}
+    for b in raw_bullet_scores:
+        if not isinstance(b, dict):
+            continue
+        bullet_id = b.get("bullet_id")
+        if bullet_id is None:
+            bullet_id = b.get("pred_id")
+        score = b.get("score", 0.5)
+        if not isinstance(bullet_id, int) or bullet_id < 1 or bullet_id > n_pred:
+            continue
+        if not isinstance(score, (int, float)):
+            continue
+        score = float(score)
+        score = min((0.0, 0.5, 1.0), key=lambda a: abs(a - score))
+        bullet_score_map[bullet_id] = {
+            "bullet_id": bullet_id,
+            "score": score,
+            "reason": b.get("reason", ""),
+        }
+
+    pred_scores: List[Dict] = []
+    missing_bullet_scores = 0
+    for bullet_id in range(1, n_pred + 1):
+        entry = bullet_score_map.get(bullet_id)
+        if entry is None:
+            missing_bullet_scores += 1
+            entry = {
+                "bullet_id": bullet_id,
+                "score": 0.5,
+                "reason": "Missing judge score; defaulted to 0.5.",
+            }
+        pred_scores.append(entry)
+
+    result["pred_scores"] = pred_scores
+    result["bullet_scores"] = [p["score"] for p in pred_scores]
+    result["missing_bullet_scores"] = missing_bullet_scores
     return result
 
 
@@ -314,6 +386,11 @@ def compute_match_rate(matches: List[Dict], n_gt: int) -> Optional[float]:
 def compute_count_penalty(n_pred: int, n_gt: int) -> float:
     """Use the same GT-relative count penalty family as the v18.3 reward."""
     return compute_count_penalty_v2_from_env(n_pred=n_pred, n_gt=n_gt)
+
+
+def compute_paper_score(recall: float, p_spec: float,
+                        baseline: float = SPECIFICITY_BASELINE) -> float:
+    return 100.0 * (float(recall) + 0.5 * (float(p_spec) - float(baseline)))
 
 
 # ======================== Judge API ========================
@@ -329,7 +406,7 @@ def call_judge(prompt_text: str, label: str = "", timeout: int = JUDGE_TIMEOUT) 
             model=JUDGE_MODEL,
             messages=[{"role": "user", "content": prompt_text}],
             temperature=0,
-            max_tokens=2048,
+            max_tokens=4096,
             timeout=timeout,
         )
         elapsed = time.time() - t0
@@ -400,6 +477,9 @@ def evaluate_item(item: dict) -> Tuple[str, dict]:
         n_matched_partial = sum(1 for m in matches if 0.3 < m.get("score", 0) < 0.99)
         weighted_match_sum = sum(m.get("score", 0) for m in matches)
         recall = weighted_match_sum / n_gt if n_gt else 0.0
+        bullet_scores = match_result.get("bullet_scores", [])
+        p_spec = sum(bullet_scores) / n_pred if n_pred else 0.0
+        paper_score = compute_paper_score(recall, p_spec)
         count_penalty = compute_count_penalty(n_pred, n_gt)
         adjusted_score = max(0.0, recall - count_penalty)
 
@@ -416,6 +496,12 @@ def evaluate_item(item: dict) -> Tuple[str, dict]:
             "n_matched": len(matches),
             "weighted_match_sum": weighted_match_sum,
             "match_rate": recall,
+            "recall": recall,
+            "p_spec": p_spec,
+            "paper_score": paper_score,
+            "pred_scores": match_result.get("pred_scores", []),
+            "bullet_scores": bullet_scores,
+            "missing_bullet_scores": match_result.get("missing_bullet_scores", 0),
             "count_penalty": count_penalty,
             "adjusted_score": adjusted_score,
             "raw_eval_response": resp,
@@ -468,10 +554,15 @@ def run_eval(input_file: str, output_file: str, fail_file: str, limit: int = 0):
                 success_count += 1
                 rate = data.get("match_rate")
                 rate_str = f"{rate:.3f}" if rate is not None else "N/A"
+                p_spec = data.get("p_spec")
+                p_spec_str = f"{p_spec:.3f}" if p_spec is not None else "N/A"
+                paper_score = data.get("paper_score")
+                score_str = f"{paper_score:.2f}" if paper_score is not None else "N/A"
                 n_matched = data.get("n_matched", 0)
                 n_gt = data.get("n_gt", 0)
                 print(f"  [{success_count + fail_count}/{len(pending)}] "
-                      f"{title[:50]} -> {rate_str} ({n_matched}/{n_gt})")
+                      f"{title[:50]} -> R={rate_str} P_spec={p_spec_str} "
+                      f"score={score_str} ({n_matched}/{n_gt})")
             else:
                 append_to_jsonl(fail_file, data)
                 fail_count += 1
@@ -496,6 +587,9 @@ def run_eval(input_file: str, output_file: str, fail_file: str, limit: int = 0):
         return sum(vals) / len(vals) if vals else 0.0
 
     avg_recall = avg_with_fails("match_rate")
+    avg_p_spec = avg_with_fails("p_spec")
+    paper_score = compute_paper_score(avg_recall, avg_p_spec)
+    avg_record_score = avg_with_fails("paper_score")
     avg_pen = avg_with_fails("count_penalty")
     avg_adj = avg_with_fails("adjusted_score")
     pred_counts = [r.get("n_pred", 0) for r in ok_results]
@@ -503,14 +597,18 @@ def run_eval(input_file: str, output_file: str, fail_file: str, limit: int = 0):
 
     print(f"Total scored: {total_n} ({len(ok_results)} ok + {len(fail_results)} fail counted as 0)")
     print()
-    print(f"  match_rate       = {avg_recall:.4f}   (raw recall, bipartite-enforced)")
+    print(f"  recall (R)          = {avg_recall:.4f}   (bipartite-enforced)")
+    print(f"  specificity (P_spec)= {avg_p_spec:.4f}   (mean generated-bullet specificity)")
+    print(f"  paper_score         = {paper_score:.2f}   "
+          f"(100 * (R + 0.5 * (P_spec - {SPECIFICITY_BASELINE:.2f})))")
+    print(f"  paper_score_avg     = {avg_record_score:.2f}   (per-record average)")
     print("  count_penalty    = "
           f"{avg_pen:.4f}   "
           f"(free_extra={os.environ.get('TASK1_COUNT_FREE_EXTRA', '1')}, "
           f"soft={os.environ.get('TASK1_COUNT_SOFT_RATE', '0.005')}, "
           f"hard_threshold={os.environ.get('TASK1_COUNT_HARD_THRESHOLD', '7')}, "
           f"hard_rate={os.environ.get('TASK1_COUNT_HARD_RATE', '0.05')})")
-    print(f"  adjusted_score   = {avg_adj:.4f}   ← main metric (recall - count_penalty)")
+    print(f"  adjusted_score      = {avg_adj:.4f}   (diagnostic: recall - count_penalty)")
     if pred_counts:
         print()
         print(f"  n_pred  mean={sum(pred_counts)/len(pred_counts):.2f}  median={sorted(pred_counts)[len(pred_counts)//2]}")
