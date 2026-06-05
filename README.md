@@ -31,7 +31,7 @@ in automated evaluation, and is the strongest
 open-source model in human evaluation.
 
 <div align="center">
-<img src="./assets/overview.pdf" width="80%"/>
+<img src="./assets/overview.png" width="80%"/>
 <p><em>Overview of ABForge.</em></p>
 </div>
 
