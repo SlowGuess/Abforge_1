@@ -23,7 +23,7 @@ torchrun --standalone --nnodes=1 --nproc_per_node="$NPROC_PER_NODE" \
   data.train_batch_size="${GLOBAL_BSZ:-128}" \
   data.micro_batch_size_per_gpu="${MICRO_BSZ:-1}" \
   +data.chat_template_kwargs.enable_thinking=False \
-  data.custom_cls.path="$ABFORGE_ROOT/abforge/abforge_sft_dataset.py" \
+  data.custom_cls.path="$ABFORGE_ROOT/dataprocess/abforge_sft_dataset.py" \
   data.custom_cls.name=AbforgeSFTDataset \
   optim.lr="${LR:-2e-5}" \
   optim.weight_decay="${WEIGHT_DECAY:-0.1}" \

@@ -1,10 +1,10 @@
 # ABForge: Post-Training for Paper-Grounded Ablation Design
 
 <p align="center">
-    🤗 <a href="https://huggingface.co/datasets/SlowGuess/abforge-data">Hugging Face Dataset</a>&nbsp&nbsp | &nbsp&nbsp📄 <a href="https://arxiv.org/abs/XXXX.XXXXX">arXiv</a>
+    🤗 <a href="https://huggingface.co/SlowGuess">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp📄 <a href="https://arxiv.org/abs/XXXX.XXXXX">arXiv</a>
 </p>
 
-<!-- TODO: replace the arXiv link above once the paper is public. -->
+<!-- TODO: replace the 🤗 Hugging Face and 📄 arXiv links above with the paper / HF collection URLs once public. The dataset link is in the Resources section below. -->
 
 ## 📖 Abstract
 
@@ -57,6 +57,25 @@ pip install -r requirements.txt
 The repository keeps ABForge-specific code **outside** `verl_proj/` where
 possible, so the framework and the project code stay decoupled.
 
+### Configuration
+
+ABForge is driven by a few environment variables; set them in your shell or job
+launcher before running the scripts below:
+
+```bash
+export ABFORGE_ROOT=/path/to/Abforge_1     # repo root
+export MODEL_PATH=Qwen/Qwen3-8B            # base model to train
+
+# OpenAI-compatible judge endpoint (hosted API or local vLLM)
+export JUDGE_API_BASE=http://127.0.0.1:8000/v1
+export JUDGE_API_KEY=dummy
+export JUDGE_MODEL=<your-judge-model>
+
+# reward server ports
+export TASK1_REWARD_PORT=6013
+export TASK2_REWARD_PORT=6011
+```
+
 ### Data
 
 Full training and evaluation data is available at
@@ -102,7 +121,7 @@ The held-out evaluation files are under `data/eval/`. Use
 
 > **Task defaults.** Task 1 SFT/RL preprocessing keeps papers with 2–6
 > ground-truth focuses by default. See
-> [`configs/task1.md`](configs/task1.md) and [`configs/task2.md`](configs/task2.md)
+> [`dataprocess/task1.md`](dataprocess/task1.md) and [`dataprocess/task2.md`](dataprocess/task2.md)
 > for the configurable defaults.
 
 ## 🛠️ Training
@@ -115,7 +134,7 @@ MODEL_PATH=Qwen/Qwen3-8B scripts/train_task2_sft.sh
 ```
 
 The SFT launchers use the external dataset class at
-`abforge/abforge_sft_dataset.py` and pass it to `verl` via
+`dataprocess/abforge_sft_dataset.py` and pass it to `verl` via
 `data.custom_cls.path`.
 
 ### Reward Servers
@@ -190,12 +209,12 @@ scripts/evaluate_task2.sh outputs/task2_infer.jsonl
 ## 🗂️ Repository Layout
 
 - `verl_proj/` — the (lightly customized) `verl` training framework.
-- `dataprocess/` — converts ABForge JSONL data to parquet files consumed by `verl`, plus `dataprocess/examples/` schema samples (full data lives on Hugging Face).
-- `abforge/` — external custom SFT dataset class used by the launchers.
+- `dataprocess/` — all data handling: JSONL→parquet conversion (`prepare_*.py`), the
+  external SFT dataset class (`abforge_sft_dataset.py`), task defaults
+  (`task1.md` / `task2.md`), and `examples/` schema samples (full data on Hugging Face).
 - `reward/` — OpenAI-compatible reward servers for RL (Task 1 / Task 2 rubric).
 - `scripts/` — launchers for SFT, RL, reward servers, local judges, and eval.
 - `eval/` — evaluation scripts.
-- `configs/` — task defaults and an environment-variable template (`env.example`).
 
 ## 🙏 Acknowledgements
 
