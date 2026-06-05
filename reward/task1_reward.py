@@ -219,7 +219,7 @@ def compute_format_factor(raw_response: str, result_text: str) -> Dict[str, floa
 
 
 def compute_count_penalty(n_pred: int, n_gt: int) -> float:
-    """GT-relative count penalty (v18.3). Delegates to compute_count_penalty_v2_from_env.
+    """GT-relative count penalty. Delegates to compute_count_penalty_v2_from_env.
 
     n_pred ≤ n_gt + TASK1_COUNT_FREE_EXTRA: no penalty.
     n_gt + TASK1_COUNT_FREE_EXTRA < n_pred ≤ TASK1_COUNT_HARD_THRESHOLD (default 7):

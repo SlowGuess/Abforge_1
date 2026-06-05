@@ -11,7 +11,7 @@ ablation-plan synthesis responses.
 Usage:
     python dataprocess/prepare_sft.py --task 1 \
         --sft_data_path data/train/sft_task1_45961.jsonl \
-        --sft_remain_path data/train/sft_raw_pool_52813.jsonl \
+        --sft_remain_path data/train/SFT_50K.jsonl \
         --tokenizer_path Qwen/Qwen3-8B \
         --local_dir data/abforge_task1_sft \
         --val_size 200

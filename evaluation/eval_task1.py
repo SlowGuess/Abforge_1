@@ -384,7 +384,7 @@ def compute_match_rate(matches: List[Dict], n_gt: int) -> Optional[float]:
 
 
 def compute_count_penalty(n_pred: int, n_gt: int) -> float:
-    """Use the same GT-relative count penalty family as the v18.3 reward."""
+    """Use the same GT-relative count penalty family as the RL reward."""
     return compute_count_penalty_v2_from_env(n_pred=n_pred, n_gt=n_gt)
 
 

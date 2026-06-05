@@ -148,7 +148,7 @@ def compute_count_penalty_v2(
     cap: float = 0.5,
     free_extra: int = 1,
 ) -> float:
-    """GT-relative count penalty (v18.3).
+    """GT-relative count penalty.
 
     n_pred ≤ n_gt + free_extra: no penalty (free zone).
     n_gt + free_extra < n_pred ≤ hard_threshold: soft_rate per excess bullet above the free zone.
