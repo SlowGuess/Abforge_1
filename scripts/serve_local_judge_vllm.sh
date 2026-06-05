@@ -4,7 +4,8 @@ set -euo pipefail
 # Starts an OpenAI-compatible local judge endpoint. The reward servers connect
 # to it through JUDGE_API_BASE=http://127.0.0.1:${PORT}/v1.
 
-MODEL=${JUDGE_MODEL:-Qwen/Qwen3-32B}
+: "${JUDGE_MODEL:?Set JUDGE_MODEL to the local model to serve as the judge}"
+MODEL=${JUDGE_MODEL}
 PORT=${PORT:-8000}
 TP_SIZE=${TP_SIZE:-1}
 MAX_MODEL_LEN=${MAX_MODEL_LEN:-32768}

@@ -26,7 +26,7 @@ mean paper-specific validity score over generated bullets.
 
 Usage:
     JUDGE_API_BASE=https://api.openai.com/v1 JUDGE_API_KEY=... JUDGE_MODEL=... \
-      python evaluation/eval_task1.py --input <infer.jsonl>
+      python eval/eval_task1.py --input <infer.jsonl>
 """
 
 import argparse

@@ -30,7 +30,6 @@ ABForge post-training.
 ## 🔗 Resources
 
 - Training & evaluation data: [`SlowGuess/abforge-data`](https://huggingface.co/datasets/SlowGuess/abforge-data)
-- Model checkpoints: <!-- TODO: add HF links for released SFT / RL checkpoints, or remove this line. -->
 
 ABForge covers two tasks:
 
@@ -135,14 +134,14 @@ scripts/serve_task1_reward_api.sh
 scripts/serve_task2_reward_api.sh
 ```
 
-Local vLLM judge:
+Local vLLM judge (serve any OpenAI-compatible model locally):
 
 ```bash
-JUDGE_MODEL=Qwen/Qwen3-32B TP_SIZE=2 PORT=8000 scripts/serve_local_judge_vllm.sh
+JUDGE_MODEL=<your-judge-model> TP_SIZE=2 PORT=8000 scripts/serve_local_judge_vllm.sh
 
 export JUDGE_API_BASE=http://127.0.0.1:8000/v1
 export JUDGE_API_KEY=dummy
-export JUDGE_MODEL=Qwen/Qwen3-32B
+export JUDGE_MODEL=<your-judge-model>
 scripts/serve_task1_reward_api.sh
 ```
 
@@ -157,11 +156,11 @@ Start the services in this order:
 
 ```bash
 # 1 + 2: judge + reward servers
-JUDGE_MODEL=Qwen/Qwen3-32B TP_SIZE=2 PORT=8000 scripts/serve_local_judge_vllm.sh
+JUDGE_MODEL=<your-judge-model> TP_SIZE=2 PORT=8000 scripts/serve_local_judge_vllm.sh
 
 export JUDGE_API_BASE=http://127.0.0.1:8000/v1
 export JUDGE_API_KEY=dummy
-export JUDGE_MODEL=Qwen/Qwen3-32B
+export JUDGE_MODEL=<your-judge-model>
 scripts/serve_task1_reward_api.sh
 scripts/serve_task2_reward_api.sh
 ```
@@ -191,17 +190,12 @@ scripts/evaluate_task2.sh outputs/task2_infer.jsonl
 ## 🗂️ Repository Layout
 
 - `verl_proj/` — the (lightly customized) `verl` training framework.
-- `dataprocess/` — converts ABForge JSONL data to parquet files consumed by `verl`.
+- `dataprocess/` — converts ABForge JSONL data to parquet files consumed by `verl`, plus `dataprocess/examples/` schema samples (full data lives on Hugging Face).
 - `abforge/` — external custom SFT dataset class used by the launchers.
 - `reward/` — OpenAI-compatible reward servers for RL (Task 1 / Task 2 rubric).
 - `scripts/` — launchers for SFT, RL, reward servers, local judges, and eval.
-- `evaluation/` — evaluation scripts.
+- `eval/` — evaluation scripts.
 - `configs/` — task defaults and an environment-variable template (`env.example`).
-- `examples/` — tiny schema examples only; full data lives on Hugging Face.
-
-> **Notes.** No training data, checkpoints, logs, secrets, or machine-specific
-> paths are committed. Task 1 produces 2–6 bullets, each pairing a target module
-> with a high-level research question.
 
 ## 🙏 Acknowledgements
 

@@ -6,7 +6,7 @@ cd "$ABFORGE_ROOT/reward"
 
 : "${JUDGE_API_BASE:?Set JUDGE_API_BASE, e.g. https://api.openai.com/v1 or http://127.0.0.1:8000/v1}"
 : "${JUDGE_API_KEY:?Set JUDGE_API_KEY. For local vLLM, any non-empty value is fine.}"
-: "${JUDGE_MODEL:?Set JUDGE_MODEL, e.g. gpt-4.1 or Qwen/Qwen3-32B}"
+: "${JUDGE_MODEL:?Set JUDGE_MODEL to your OpenAI-compatible judge model}"
 
 export TASK1_REWARD_PORT="${TASK1_REWARD_PORT:-6013}"
 export TASK1_COUNT_FREE_EXTRA="${TASK1_COUNT_FREE_EXTRA:-1}"

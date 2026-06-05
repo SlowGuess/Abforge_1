@@ -16,7 +16,7 @@ Both share:
 
 Usage:
     JUDGE_API_BASE=https://api.openai.com/v1 JUDGE_API_KEY=... JUDGE_MODEL=... \
-      python evaluation/eval_task2_rubric.py --input <infer.jsonl>
+      python eval/eval_task2_rubric.py --input <infer.jsonl>
 """
 
 import argparse
@@ -41,7 +41,7 @@ write_lock = Lock()
 
 # ======================== Evaluation Prompt (v2) ========================
 #
-# Weights are FIXED in the rubric (see stage3_rubric_v2) — we do not ask the
+# Weights are FIXED in the rubric — we do not ask the
 # judge to reassign them. The judge only writes a short critique and a score
 # in {0, 0.5, 1}.
 
