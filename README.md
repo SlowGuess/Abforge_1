@@ -8,24 +8,33 @@
 
 ## 📖 Abstract
 
-<!-- TODO: replace this paragraph with the official paper abstract. -->
-
-ABForge is a post-training codebase for **paper-grounded ablation design**. Given
-a scientific paper, ABForge trains language models to (1) identify the key
-ablation objectives a paper should investigate, and (2) synthesize a rigorous,
-executable ablation experiment plan. The pipeline follows a standard
-**SFT → GRPO** recipe on a lightly customized [`verl`](https://github.com/volcengine/verl)
-training stack, using **LLM-as-judge** reward servers to score the structured
-output during reinforcement learning. We release the data-conversion tools,
-reward servers, training launchers, and evaluation scripts needed to reproduce
-ABForge post-training.
+Ablation studies are central to testing scien-
+tific claims, yet designing a rigorous paper-
+grounded ablation remains difficult. We for-
+mulate this problem as two tasks, Ablation
+Objective Identification and Ablation Exper-
+iment Synthesis, and introduce AblationBench,
+an expert-annotated benchmark for evaluating
+both. To support post-training, we construct
+the ABForge post-training corpus through a
+semi-automated audit-in-the-loop pipeline that
+extracts ablation objectives, performs abla-
+tion specification completion, synthesizes self-
+reflection CoT rationales, and derives target-
+specific evaluation rubrics. We then post-train
+Qwen-3-8B with supervised fine-tuning fol-
+lowed by rubric-based reinforcement learning.
+The resulting model improves the base model
+from 42.1 to 56.8 on objective identification
+and from 42.0 to 62.0 on experiment synthesis
+in automated evaluation, and is the strongest
+open-source model in human evaluation.
 
 <div align="center">
-<img src="./assets/overview.png" width="80%"/>
+<img src="./assets/overview.pdf" width="80%"/>
 <p><em>Overview of ABForge.</em></p>
 </div>
 
-<!-- TODO: add ./assets/overview.png. Until then this image will show as broken. -->
 
 ## 🔗 Resources
 
