@@ -25,8 +25,8 @@ specific evaluation rubrics. We then post-train
 Qwen-3-8B with supervised fine-tuning fol-
 lowed by rubric-based reinforcement learning.
 The resulting model improves the base model
-from 42.1 to 56.8 on objective identification
-and from 42.0 to 62.0 on experiment synthesis
+from 44.4 to 58.7 on objective identification
+and from 43.4 to 61.4 on experiment synthesis
 in automated evaluation, and is the strongest
 open-source model in human evaluation.
 
