@@ -7,6 +7,10 @@ model-facing input format used during SFT/RL training.
 - `prepare_sft.py`: SFT conversion for Task 1 and Task 2.
 - `prepare_task1_rl.py`: RL conversion for Task 1.
 - `prepare_task2_rl.py`: RL conversion for Task 2.
+- `prepare_combined.py`: merges the per-task parquets into the unified
+  (mixed 1:1) SFT/RL training sets consumed by `scripts/train_sft.sh` and
+  `scripts/train_rl.sh`. Each RL row keeps its `data_source`
+  (`abforge_task1` / `abforge_task2`) so the reward server can route it.
 
 Full JSONL data should be downloaded from
 `https://huggingface.co/datasets/SlowGuess/abforge-data`.

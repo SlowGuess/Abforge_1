@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Unified SFT: fine-tune the base model on the 1:1 Task 1 + Task 2 mixture
+# (data/abforge_combined_sft, built by dataprocess/prepare_combined.py).
 set -euo pipefail
 set -x
 
@@ -7,9 +9,9 @@ cd "$ABFORGE_ROOT/verl_proj"
 
 NPROC_PER_NODE=${NPROC_PER_NODE:-4}
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-8B}
-TRAIN_PATH=${TRAIN_PATH:-$ABFORGE_ROOT/data/abforge_task2_sft/train.parquet}
-VAL_PATH=${VAL_PATH:-$ABFORGE_ROOT/data/abforge_task2_sft/val.parquet}
-SAVE_DIR=${SAVE_DIR:-$ABFORGE_ROOT/outputs/checkpoints/task2_sft}
+TRAIN_PATH=${TRAIN_PATH:-$ABFORGE_ROOT/data/abforge_combined_sft/train.parquet}
+VAL_PATH=${VAL_PATH:-$ABFORGE_ROOT/data/abforge_combined_sft/val.parquet}
+SAVE_DIR=${SAVE_DIR:-$ABFORGE_ROOT/outputs/checkpoints/sft}
 LOGGER=${LOGGER:-"['console']"}
 
 torchrun --standalone --nnodes=1 --nproc_per_node="$NPROC_PER_NODE" \
@@ -38,8 +40,8 @@ torchrun --standalone --nnodes=1 --nproc_per_node="$NPROC_PER_NODE" \
   ulysses_sequence_parallel_size="${ULYSSES_SIZE:-2}" \
   trainer.default_local_dir="$SAVE_DIR" \
   trainer.default_hdfs_dir=null \
-  trainer.project_name="${PROJECT_NAME:-abforge_task2_sft}" \
-  trainer.experiment_name="${EXPERIMENT_NAME:-qwen3_8b_sft_task2}" \
+  trainer.project_name="${PROJECT_NAME:-abforge_sft}" \
+  trainer.experiment_name="${EXPERIMENT_NAME:-qwen3_8b_sft_unified}" \
   trainer.total_epochs="${TOTAL_EPOCHS:-1}" \
   trainer.save_freq="${SAVE_FREQ:--1}" \
   trainer.logger="$LOGGER" \

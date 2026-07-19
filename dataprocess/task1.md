@@ -4,7 +4,10 @@
 - SFT val parquet: `data/abforge_task1_sft/val.parquet`
 - RL train parquet: `data/abforge_task1_rl/train.parquet`
 - RL val parquet: `data/abforge_task1_rl/val.parquet`
-- Reward endpoint: `http://127.0.0.1:6013/get_reward_task1`
+- Training consumes the unified mixture built by `prepare_combined.py`
+  (`data/abforge_combined_sft` / `data/abforge_combined_rl`).
+- Reward endpoint: `http://127.0.0.1:6010/get_reward` (unified server; routed
+  to the Task 1 judge by `data_source`).
 - Data filter: keep papers with 2-6 GT focuses by default.
 - Output format: `<Result>` with 2-6 bullets. Each bullet contains
   `- Target Module: ...` and an indented `- Research Question: ...`.

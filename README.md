@@ -25,8 +25,8 @@ specific evaluation rubrics. We then post-train
 Qwen-3-8B with supervised fine-tuning fol-
 lowed by rubric-based reinforcement learning.
 The resulting model improves the base model
-from 44.4 to 58.7 on objective identification
-and from 43.4 to 61.4 on experiment synthesis
+from 44.4 to 55.9 on objective identification
+and from 43.4 to 62.4 on experiment synthesis
 in automated evaluation, and is the strongest
 open-source model in human evaluation.
 
@@ -46,6 +46,11 @@ ABForge covers two tasks:
   objectives / research questions a paper should investigate.
 - **Task 2 — Ablation plan synthesis:** produce a rigorous ablation experiment
   plan (objective, baseline setup, variants, fixed protocols & metrics).
+
+ABForge trains a **single unified model** that handles both tasks: Task 1 and
+Task 2 examples are mixed at a 1:1 ratio in both the SFT and RL stages, and
+during RL each rollout is routed to its task-specific reward by the sample's
+`data_source` field.
 
 ## 🚀 Quick Start
 
@@ -80,9 +85,8 @@ export JUDGE_API_BASE=http://127.0.0.1:8000/v1
 export JUDGE_API_KEY=dummy
 export JUDGE_MODEL=<your-judge-model>
 
-# reward server ports
-export TASK1_REWARD_PORT=6013
-export TASK2_REWARD_PORT=6011
+# unified reward server port
+export COMBINED_REWARD_PORT=6010
 ```
 
 ### Data
@@ -98,7 +102,7 @@ huggingface-cli download SlowGuess/abforge-data \
   --local-dir data
 ```
 
-Then convert the training files to parquet (consumed by `verl`):
+Convert each task's training files to parquet:
 
 ```bash
 # SFT
@@ -124,6 +128,19 @@ python dataprocess/prepare_task2_rl.py \
   --local_dir data/abforge_task2_rl
 ```
 
+Then merge them into the unified (mixed 1:1) training sets consumed by the
+training scripts:
+
+```bash
+python dataprocess/prepare_combined.py --mode sft \
+  --task1_dir data/abforge_task1_sft --task2_dir data/abforge_task2_sft \
+  --out_dir data/abforge_combined_sft
+
+python dataprocess/prepare_combined.py --mode rl \
+  --task1_dir data/abforge_task1_rl --task2_dir data/abforge_task2_rl \
+  --out_dir data/abforge_combined_rl
+```
+
 The held-out evaluation files are under `data/eval/`. Use
 `ablationbench_1000.jsonl` for the full benchmark and
 `ablationbench_200.jsonl` for the clean 200-instance human-evaluation subset.
@@ -137,19 +154,24 @@ The held-out evaluation files are under `data/eval/`. Use
 
 ### SFT
 
+Fine-tune the base model on the mixed Task 1 + Task 2 SFT data:
+
 ```bash
-MODEL_PATH=Qwen/Qwen3-8B scripts/train_task1_sft.sh
-MODEL_PATH=Qwen/Qwen3-8B scripts/train_task2_sft.sh
+MODEL_PATH=Qwen/Qwen3-8B scripts/train_sft.sh
 ```
 
-The SFT launchers use the external dataset class at
-`dataprocess/abforge_sft_dataset.py` and pass it to `verl` via
+The SFT launcher uses the external dataset class at
+`dataprocess/abforge_sft_dataset.py` and passes it to `verl` via
 `data.custom_cls.path`.
 
-### Reward Servers
+### Reward Server
 
-The reward servers expose an OpenAI-compatible chat-completions judge. The judge
-can be a hosted API endpoint or a local vLLM OpenAI server.
+RL uses a single unified reward server (`reward/combined_reward.py`). It
+exposes `POST /get_reward` and routes each request to the Task 1 judge
+(specificity-weighted objective matching + structural penalties) or the Task 2
+judge (weighted rubric score + format/length penalties) based on the sample's
+`data_source`. The underlying judge is an OpenAI-compatible chat-completions
+endpoint — a hosted API or a local vLLM server.
 
 Hosted or existing endpoint:
 
@@ -158,8 +180,7 @@ export JUDGE_API_BASE=https://api.openai.com/v1
 export JUDGE_API_KEY=...
 export JUDGE_MODEL=...
 
-scripts/serve_task1_reward_api.sh
-scripts/serve_task2_reward_api.sh
+scripts/serve_reward_api.sh
 ```
 
 Local vLLM judge (serve any OpenAI-compatible model locally):
@@ -170,7 +191,7 @@ JUDGE_MODEL=<your-judge-model> TP_SIZE=2 PORT=8000 scripts/serve_local_judge_vll
 export JUDGE_API_BASE=http://127.0.0.1:8000/v1
 export JUDGE_API_KEY=dummy
 export JUDGE_MODEL=<your-judge-model>
-scripts/serve_task1_reward_api.sh
+scripts/serve_reward_api.sh
 ```
 
 ### RL (GRPO)
@@ -179,32 +200,35 @@ Start the services in this order:
 
 1. Start a judge endpoint, or point `JUDGE_API_BASE` to an existing
    OpenAI-compatible API.
-2. Start the corresponding ABForge reward server.
+2. Start the unified ABForge reward server.
 3. Run the RL launcher with `REWARD_URL` pointing to that reward server.
 
 ```bash
-# 1 + 2: judge + reward servers
+# 1 + 2: judge + reward server
 JUDGE_MODEL=<your-judge-model> TP_SIZE=2 PORT=8000 scripts/serve_local_judge_vllm.sh
 
 export JUDGE_API_BASE=http://127.0.0.1:8000/v1
 export JUDGE_API_KEY=dummy
 export JUDGE_MODEL=<your-judge-model>
-scripts/serve_task1_reward_api.sh
-scripts/serve_task2_reward_api.sh
+scripts/serve_reward_api.sh
 ```
 
 Then, in another shell:
 
 ```bash
-# 3: RL launchers (point MODEL_PATH at your SFT checkpoint)
-MODEL_PATH=outputs/checkpoints/task1_sft scripts/train_task1_rl.sh
-MODEL_PATH=outputs/checkpoints/task2_sft scripts/train_task2_rl.sh
+# 3: RL launcher (point MODEL_PATH at your SFT checkpoint)
+MODEL_PATH=outputs/checkpoints/sft scripts/train_rl.sh
 ```
+
+The RL launcher runs 200 GRPO steps by default (twice a single-task schedule,
+since each task is ~50% of the mixed batch) and validates/saves every 20
+steps. Validation score typically peaks well before the schedule ends; select
+the best-validation checkpoint rather than the last one.
 
 ## 📈 Evaluation
 
-The evaluation scripts use the same OpenAI-compatible judge configuration as the
-reward servers:
+Evaluation is per-task. The evaluation scripts use the same OpenAI-compatible
+judge configuration as the reward server:
 
 ```bash
 export JUDGE_API_BASE=https://api.openai.com/v1
@@ -218,11 +242,13 @@ scripts/evaluate_task2.sh outputs/task2_infer.jsonl
 ## 🗂️ Repository Layout
 
 - `verl_proj/` — the (lightly customized) `verl` training framework.
-- `dataprocess/` — all data handling: JSONL→parquet conversion (`prepare_*.py`), the
+- `dataprocess/` — all data handling: per-task JSONL→parquet conversion
+  (`prepare_*.py`), the unified-mixture merge (`prepare_combined.py`), the
   external SFT dataset class (`abforge_sft_dataset.py`), task defaults
   (`task1.md` / `task2.md`), and `examples/` schema samples (full data on Hugging Face).
-- `reward/` — OpenAI-compatible reward servers for RL (Task 1 / Task 2 rubric).
-- `scripts/` — launchers for SFT, RL, reward servers, local judges, and eval.
+- `reward/` — the unified reward server for RL (`combined_reward.py`), which
+  routes to the Task 1 / Task 2 rubric judges by `data_source`.
+- `scripts/` — launchers for SFT, RL, the reward server, local judges, and eval.
 - `eval/` — evaluation scripts.
 
 ## 🙏 Acknowledgements

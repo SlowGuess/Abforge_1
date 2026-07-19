@@ -1,11 +1,24 @@
-# Reward Servers
+# Reward Server
 
-The reward servers expose FastAPI endpoints used by `verl` RL training:
+RL training uses a single unified reward server:
 
-- Task 1: `POST /get_reward_task1`
-- Task 2 rubric: `POST /get_reward_task2`
+```bash
+scripts/serve_reward_api.sh   # runs reward/combined_reward.py on port 6010
+```
 
-Both servers call an OpenAI-compatible judge endpoint configured through:
+It exposes `POST /get_reward` and routes each request by the sample's
+`data_source` field:
+
+- `abforge_task1*` → Task 1 judge (`task1_reward.py`): specificity-weighted
+  one-to-one objective matching with structural penalties.
+- `abforge_task2*` → Task 2 rubric judge (`task2_rubric_reward.py`): weighted
+  rubric score with format/length penalties.
+
+The per-task endpoints `POST /get_reward_task1` and `POST /get_reward_task2`
+are served by the same process, and `GET /health` reports the judge
+configuration.
+
+Both judges call an OpenAI-compatible judge endpoint configured through:
 
 ```bash
 export JUDGE_API_BASE=http://127.0.0.1:8000/v1
