@@ -154,8 +154,9 @@ The held-out evaluation files are under `data/eval/`. Use
 `ablationbench_1000.jsonl` for the full benchmark and
 `ablationbench_200.jsonl` for the clean 200-instance human-evaluation subset.
 
-> **Task defaults.** Task 1 SFT/RL preprocessing keeps papers with 2–6
-> ground-truth focuses by default. See
+> **Task defaults.** Task 1 SFT/RL preprocessing keeps papers with 1–6
+> ground-truth focuses by default, matching the released runs. The evaluation
+> sets are strictly 2–6. See
 > [`dataprocess/task1.md`](dataprocess/task1.md) and [`dataprocess/task2.md`](dataprocess/task2.md)
 > for the configurable defaults.
 

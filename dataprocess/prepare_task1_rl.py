@@ -103,12 +103,14 @@ def main():
     parser.add_argument("--val_size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_content_chars", type=int, default=50000)
-    parser.add_argument("--min_gt", type=int, default=2,
-                        help="Min GT Investigation_Focus count. Default 2.")
+    parser.add_argument("--min_gt", type=int, default=1,
+                        help="Min GT Investigation_Focus count. Default 1 — the "
+                             "value used for the released runs; single-objective "
+                             "papers are kept even though the prompt asks for 2-6.")
     parser.add_argument("--max_gt", type=int, default=6,
                         help="Max GT Investigation_Focus count. Default 6 — "
-                             "aligned with the 2-6 prompt constraint and the "
-                             "eval/reward count_penalty hard_cap.")
+                             "aligned with the upper end of the prompt constraint "
+                             "and the eval/reward count_penalty hard_cap.")
     args = parser.parse_args()
 
     input_path = Path(os.path.expanduser(args.input)).resolve()

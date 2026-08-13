@@ -211,8 +211,9 @@ def main() -> None:
     )
     parser.add_argument("--min_think_tokens", type=int, default=100)
     parser.add_argument("--min_result_tokens", type=int, default=50)
-    parser.add_argument("--task1_min_gt", type=int, default=2,
-                        help="For Task 1 only: keep records with at least this many GT focuses.")
+    parser.add_argument("--task1_min_gt", type=int, default=1,
+                        help="For Task 1 only: keep records with at least this many GT focuses. "
+                             "Default 1 — the value used for the released runs.")
     parser.add_argument("--task1_max_gt", type=int, default=6,
                         help="For Task 1 only: keep records with at most this many GT focuses.")
     args = parser.parse_args()
