@@ -1,10 +1,10 @@
 # ABForge: Post-Training for Paper-Grounded Ablation Design
 
 <p align="center">
-    🤗 <a href="https://huggingface.co/SlowGuess">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp📄 <a href="https://arxiv.org/abs/XXXX.XXXXX">arXiv</a>
+    🤗 <a href="https://huggingface.co/collections/SlowGuess/abforge-6a2ac561d0e97f11e409dd75">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp📄 <a href="https://arxiv.org/abs/XXXX.XXXXX">arXiv</a>
 </p>
 
-<!-- TODO: replace the 🤗 Hugging Face and 📄 arXiv links above with the paper / HF collection URLs once public. The dataset link is in the Resources section below. -->
+<!-- TODO: replace the 📄 arXiv link above with the paper URL once public. -->
 
 ## 📖 Abstract
 
@@ -38,7 +38,16 @@ open-source model in human evaluation.
 
 ## 🔗 Resources
 
-- Training & evaluation data: [`SlowGuess/abforge-data`](https://huggingface.co/datasets/SlowGuess/abforge-data)
+- Models & data (Hugging Face collection): [`SlowGuess/ABForge`](https://huggingface.co/collections/SlowGuess/abforge-6a2ac561d0e97f11e409dd75)
+- Released model: [`SlowGuess/ABForge-Qwen3-8B`](https://huggingface.co/SlowGuess/ABForge-Qwen3-8B) —
+  one unified checkpoint for both tasks, with its
+  [`-SFT`](https://huggingface.co/SlowGuess/ABForge-Qwen3-8B-SFT) and
+  [`-RL`](https://huggingface.co/SlowGuess/ABForge-Qwen3-8B-RL) stage ablations
+- Task-specific specialists (ablation of task sharing):
+  [`-Task1`](https://huggingface.co/SlowGuess/ABForge-Qwen3-8B-Task1) /
+  [`-Task2`](https://huggingface.co/SlowGuess/ABForge-Qwen3-8B-Task2), each also in `-SFT` and `-RL` variants
+- Training & evaluation data: [`SlowGuess/abforge-data`](https://huggingface.co/datasets/SlowGuess/abforge-data) —
+  also hosts per-paper generations and judge outputs for all 21 evaluated models under `outputs/`
 
 ABForge covers two tasks:
 
