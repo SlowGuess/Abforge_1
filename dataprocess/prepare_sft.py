@@ -1,29 +1,31 @@
 """
-Preprocess ABForge SFT data from JSONL to verl parquet.
+Preprocess ABForge SFT data into verl parquet.
 
-This script does not generate new supervision. It formats the released JSONL
-records into the prompt/response columns consumed by the verl SFT trainer,
-filters overlong examples, and creates a paper-grouped train/validation split.
+This script does not generate new supervision. It reads the unified table of
+`SlowGuess/abforge-data`, keeps the rows belonging to the requested task's SFT
+split, formats them into the prompt/response columns consumed by the verl SFT
+trainer, filters overlong examples, and creates a paper-grouped train/validation
+split.
 
 Task 1 trains ablation-objective identification responses. Task 2 trains
 ablation-plan synthesis responses.
 
 Usage:
     python dataprocess/prepare_sft.py --task 1 \
-        --sft_data_path data/train/sft_task1_45961.jsonl \
-        --sft_remain_path data/train/SFT_50K.jsonl \
         --tokenizer_path Qwen/Qwen3-8B \
         --local_dir data/abforge_task1_sft \
         --val_size 200
+
+`--dataset` also accepts a local directory, e.g. one produced by
+`huggingface-cli download SlowGuess/abforge-data --repo-type dataset --local-dir data`
+(pass `data/unified`).
 """
 
 import argparse
-import json
 import os
 import random
-import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import datasets
 
@@ -102,9 +104,10 @@ TASK_CFG = {
     1: {
         "prompt_template": TASK1_USER_PROMPT,
         "needs_goal": False,
-        "think_field": "Global_CoT",
-        "result_field": "Global_Result",
+        "think_field": "global_cot",
+        "result_field": "global_result",
         "result_tag": "Result",
+        "split_flag": "in_sft_task1",
     },
     2: {
         "prompt_template": TASK2_USER_PROMPT,
@@ -112,30 +115,39 @@ TASK_CFG = {
         "think_field": "detail_think",
         "result_field": "detail_plan",
         "result_tag": "Proposed_Plan",
+        "split_flag": "in_sft_task2",
     },
 }
 
-
-def load_jsonl(path: Path) -> List[Dict]:
-    out = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
+# columns pulled from the unified table; everything else is dropped up front so
+# the 1.9 GB table does not have to be materialized in full
+KEEP_COLUMNS = ["pdf_url", "title", "content", "goal", "n_focuses",
+                "global_cot", "global_result", "detail_think", "detail_plan",
+                "in_sft_task1", "in_sft_task2"]
 
 
-_INVESTIGATION_FOCUS_RE = re.compile(r"<Investigation_Focus>", re.IGNORECASE)
+def load_unified(dataset: str, config: str, split: str, cfg: Dict):
+    """Rows of the unified table that belong to this task's SFT split."""
+    import datasets as hfds
 
+    if os.path.isdir(os.path.expanduser(dataset)):
+        files = sorted(str(p) for p in Path(os.path.expanduser(dataset)).glob("*.parquet"))
+        if not files:
+            raise SystemExit(f"no parquet files under {dataset}")
+        ds = hfds.load_dataset("parquet", data_files=files, split="train")
+    else:
+        ds = hfds.load_dataset(dataset, config, split=split)
 
-def count_gt_focuses(record: Dict) -> int:
-    return len(_INVESTIGATION_FOCUS_RE.findall(record.get("Candidates", "") or ""))
+    drop = [c for c in ds.column_names if c not in KEEP_COLUMNS]
+    if drop:
+        ds = ds.remove_columns(drop)
+    flag = cfg["split_flag"]
+    ds = ds.filter(lambda r: r[flag] and (r["content"] or "").strip())
+    return ds
 
 
 def paper_key(record: Dict) -> str:
-    meta = record.get("meta") or {}
-    return meta.get("pdf_url") or meta.get("title") or ""
+    return record.get("pdf_url") or record.get("title") or ""
 
 
 def build_prompt(cfg: Dict, content: str, goal: str) -> str:
@@ -195,10 +207,10 @@ def group_aware_split(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=int, choices=[1, 2], required=True)
-    parser.add_argument("--sft_data_path", required=True,
-                        help="JSONL with detail_think/detail_plan or Global_CoT/Global_Result")
-    parser.add_argument("--sft_remain_path", required=True,
-                        help="JSONL with source Content/Goal/Rubric fields")
+    parser.add_argument("--dataset", default="SlowGuess/abforge-data",
+                        help="HF dataset id, or a local directory of unified/*.parquet")
+    parser.add_argument("--config", default="unified")
+    parser.add_argument("--split", default="train")
     parser.add_argument("--tokenizer_path", default="Qwen/Qwen3-8B")
     parser.add_argument("--local_dir", required=True)
     parser.add_argument("--val_size", type=int, default=200)
@@ -219,22 +231,11 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = TASK_CFG[args.task]
-    sft_path = Path(os.path.expanduser(args.sft_data_path)).resolve()
-    rem_path = Path(os.path.expanduser(args.sft_remain_path)).resolve()
     out_dir = Path(os.path.expanduser(args.local_dir)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[task {args.task}] loading {rem_path.name} ...")
-    remain_records = load_jsonl(rem_path)
-    remain_map: Dict[str, Dict] = {}
-    for r in remain_records:
-        k = paper_key(r)
-        if k:
-            remain_map[k] = r
-    print(f"[task {args.task}] remain unique papers: {len(remain_map)}")
-
-    print(f"[task {args.task}] loading {sft_path.name} ...")
-    sft_records = load_jsonl(sft_path)
+    print(f"[task {args.task}] loading {args.dataset} ({args.config}) ...")
+    sft_records = load_unified(args.dataset, args.config, args.split, cfg)
     print(f"[task {args.task}] sft records: {len(sft_records)}")
 
     print(f"[task {args.task}] loading tokenizer ...")
@@ -258,7 +259,6 @@ def main() -> None:
     rows: List[Dict] = []
     stats = {
         "total": 0,
-        "miss_join": 0,
         "miss_field": 0,
         "short_think": 0,
         "short_result": 0,
@@ -269,12 +269,8 @@ def main() -> None:
     for idx, a in enumerate(sft_records):
         stats["total"] += 1
         k = paper_key(a)
-        b = remain_map.get(k)
-        if not b:
-            stats["miss_join"] += 1
-            continue
         if args.task == 1:
-            n_gt = count_gt_focuses(b)
+            n_gt = a.get("n_focuses") or 0
             if n_gt < args.task1_min_gt:
                 stats["gt_too_few"] = stats.get("gt_too_few", 0) + 1
                 continue
@@ -296,8 +292,8 @@ def main() -> None:
             stats["short_result"] += 1
             continue
 
-        content = b.get("Content", "") or ""
-        goal = b.get("Goal", "") or a.get("Goal", "") or ""
+        content = a.get("content", "") or ""
+        goal = a.get("goal", "") or ""
         user_msg = build_prompt(cfg, content=content, goal=goal)
         response = build_response(cfg, think=think, result=result)
 
@@ -310,7 +306,6 @@ def main() -> None:
             stats["too_long"] += 1
             continue
 
-        meta = a.get("meta", {}) or {}
         rows.append(
             {
                 "data_source": f"abforge_task{args.task}_sft",
@@ -319,8 +314,8 @@ def main() -> None:
                 "_paper_key": k,
                 "extra_info": {
                     "task": args.task,
-                    "title": meta.get("title", ""),
-                    "pdf_url": meta.get("pdf_url", ""),
+                    "title": a.get("title", ""),
+                    "pdf_url": a.get("pdf_url", ""),
                     "prompt_tokens": prompt_tok,
                     "response_tokens": resp_tok,
                     "total_tokens": total_tok,

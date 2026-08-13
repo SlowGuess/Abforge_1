@@ -81,7 +81,11 @@ def convert_record(record: Dict, split: str, idx: int, max_content_chars: int) -
         "ability": "ablation_objective_identification",
         "reward_model": {
             "style": "candidate_coverage",
-            "ground_truth": record.get("Identification", ""),
+            # The reference objectives live in `Candidates`. An earlier version read a
+            # non-existent `Identification` key, which left this an empty string; the
+            # Task 1 reward scores against `extra_info.candidates`, so training was
+            # unaffected, but the field is now populated and consistent.
+            "ground_truth": record.get("Candidates", ""),
         },
         "extra_info": {
             "split": split,
@@ -89,7 +93,6 @@ def convert_record(record: Dict, split: str, idx: int, max_content_chars: int) -
             "title": meta.get("title", ""),
             "paper_context": content,
             "candidates": record.get("Candidates", ""),
-            "identification": record.get("Identification", ""),
             "meta": meta,
         },
     }

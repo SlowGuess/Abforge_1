@@ -586,8 +586,21 @@ def run_eval(input_file: str, output_file: str, fail_file: str, limit: int = 0):
         vals.extend([0.0] * len(fail_results))
         return sum(vals) / len(vals) if vals else 0.0
 
+    def p_spec_of(r):
+        """Mean paper-specific validity over generated bullets. Published judge
+        files name this `precision`; recompute from bullet_scores if neither is
+        present, so summarizing a downloaded file gives the same number as a
+        fresh run instead of silently falling back to 0."""
+        for key in ("p_spec", "precision"):
+            v = r.get(key)
+            if isinstance(v, (int, float)):
+                return float(v)
+        scores, n_pred = r.get("bullet_scores") or [], r.get("n_pred") or 0
+        return sum(scores) / n_pred if n_pred else 0.0
+
     avg_recall = avg_with_fails("match_rate")
-    avg_p_spec = avg_with_fails("p_spec")
+    avg_p_spec = (sum(p_spec_of(r) for r in ok_results)
+                  / (len(ok_results) + len(fail_results)))
     paper_score = compute_paper_score(avg_recall, avg_p_spec)
     avg_record_score = avg_with_fails("paper_score")
     avg_pen = avg_with_fails("count_penalty")

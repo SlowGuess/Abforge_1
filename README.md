@@ -103,28 +103,25 @@ export COMBINED_REWARD_PORT=6010
 Full training and evaluation data is available at
 [`SlowGuess/abforge-data`](https://huggingface.co/datasets/SlowGuess/abforge-data).
 
-Download the JSONL files:
+Download it (the canonical table plus the RL and evaluation files):
 
 ```bash
-huggingface-cli download SlowGuess/abforge-data \
-  --repo-type dataset \
-  --local-dir data
+huggingface-cli download SlowGuess/abforge-data --repo-type dataset \
+  --include "unified/*" "train/RL_*" "eval/*" --local-dir data
 ```
 
-Convert each task's training files to parquet:
+Convert each task's training data to parquet. The SFT scripts read the unified
+table directly — pass a dataset id to stream it from the Hub, or the local
+`data/unified` directory downloaded above:
 
 ```bash
 # SFT
-python dataprocess/prepare_sft.py \
-  --task 1 \
-  --sft_data_path data/train/sft_task1_45961.jsonl \
-  --sft_remain_path data/train/SFT_50K.jsonl \
+python dataprocess/prepare_sft.py --task 1 \
+  --dataset data/unified \
   --local_dir data/abforge_task1_sft
 
-python dataprocess/prepare_sft.py \
-  --task 2 \
-  --sft_data_path data/train/sft_task2_37019.jsonl \
-  --sft_remain_path data/train/SFT_50K.jsonl \
+python dataprocess/prepare_sft.py --task 2 \
+  --dataset data/unified \
   --local_dir data/abforge_task2_sft
 
 # RL
