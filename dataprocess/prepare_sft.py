@@ -108,6 +108,7 @@ TASK_CFG = {
         "result_field": "global_result",
         "result_tag": "Result",
         "split_flag": "in_sft_task1",
+        "run_flag": "sft_run_task1",
     },
     2: {
         "prompt_template": TASK2_USER_PROMPT,
@@ -116,6 +117,7 @@ TASK_CFG = {
         "result_field": "detail_plan",
         "result_tag": "Proposed_Plan",
         "split_flag": "in_sft_task2",
+        "run_flag": "sft_run_task2",
     },
 }
 
@@ -123,11 +125,18 @@ TASK_CFG = {
 # the 1.9 GB table does not have to be materialized in full
 KEEP_COLUMNS = ["pdf_url", "title", "content", "goal", "n_focuses",
                 "global_cot", "global_result", "detail_think", "detail_plan",
-                "in_sft_task1", "in_sft_task2"]
+                "in_sft_task1", "in_sft_task2", "sft_run_task1", "sft_run_task2"]
 
 
-def load_unified(dataset: str, config: str, split: str, cfg: Dict):
-    """Rows of the unified table that belong to this task's SFT split."""
+def load_unified(dataset: str, config: str, split: str, cfg: Dict, select: str):
+    """Rows of the unified table for this task's SFT data.
+
+    `select=run` takes the rows the released SFT run actually consumed, recorded in
+    the table as `sft_run_task{1,2}`. That selection was made on an intermediate
+    artifact which is not part of the release, so it cannot be recomputed from the
+    published text — reading the flag is the only way to reproduce those splits.
+    `select=view` instead takes the whole task view and re-derives the filters below.
+    """
     import datasets as hfds
 
     if os.path.isdir(os.path.expanduser(dataset)):
@@ -141,7 +150,9 @@ def load_unified(dataset: str, config: str, split: str, cfg: Dict):
     drop = [c for c in ds.column_names if c not in KEEP_COLUMNS]
     if drop:
         ds = ds.remove_columns(drop)
-    flag = cfg["split_flag"]
+    flag = cfg["run_flag"] if select == "run" else cfg["split_flag"]
+    if flag not in ds.column_names:
+        raise SystemExit(f"column {flag} missing; the table predates --select {select}")
     ds = ds.filter(lambda r: r[flag] and (r["content"] or "").strip())
     return ds
 
@@ -211,6 +222,10 @@ def main() -> None:
                         help="HF dataset id, or a local directory of unified/*.parquet")
     parser.add_argument("--config", default="unified")
     parser.add_argument("--split", default="train")
+    parser.add_argument("--select", choices=["run", "view"], default="run",
+                        help="run: the rows the released SFT run used (reproduces the "
+                             "reported training sizes). view: the whole task view, "
+                             "re-filtered by the options below.")
     parser.add_argument("--tokenizer_path", default="Qwen/Qwen3-8B")
     parser.add_argument("--local_dir", required=True)
     parser.add_argument("--val_size", type=int, default=200)
@@ -234,8 +249,8 @@ def main() -> None:
     out_dir = Path(os.path.expanduser(args.local_dir)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[task {args.task}] loading {args.dataset} ({args.config}) ...")
-    sft_records = load_unified(args.dataset, args.config, args.split, cfg)
+    print(f"[task {args.task}] loading {args.dataset} ({args.config}), select={args.select} ...")
+    sft_records = load_unified(args.dataset, args.config, args.split, cfg, args.select)
     print(f"[task {args.task}] sft records: {len(sft_records)}")
 
     print(f"[task {args.task}] loading tokenizer ...")
@@ -269,7 +284,9 @@ def main() -> None:
     for idx, a in enumerate(sft_records):
         stats["total"] += 1
         k = paper_key(a)
-        if args.task == 1:
+        # in run mode the selection already encodes every filter the run applied,
+        # so re-applying them here would only shrink it further
+        if args.task == 1 and args.select == "view":
             n_gt = a.get("n_focuses") or 0
             if n_gt < args.task1_min_gt:
                 stats["gt_too_few"] = stats.get("gt_too_few", 0) + 1

@@ -6,8 +6,12 @@ model-facing input format used during SFT/RL training.
 
 - `prepare_sft.py`: SFT conversion for Task 1 and Task 2. Reads the **unified**
   table of the dataset (one row per paper, carrying both the paper context and
-  the task supervision) and keeps the rows flagged `in_sft_task1` /
-  `in_sft_task2`.
+  the task supervision). By default (`--select run`) it takes the rows the
+  released SFT run consumed, recorded in the table as `sft_run_task{1,2}`; that
+  selection was made on an intermediate artifact outside the release and cannot
+  be recomputed from the published text. `--select view` instead takes the whole
+  `in_sft_task{1,2}` view and re-derives the focus/length filters, which yields a
+  larger pool.
 - `prepare_task1_rl.py`: RL conversion for Task 1.
 - `prepare_task2_rl.py`: RL conversion for Task 2.
 - `prepare_combined.py`: merges the per-task parquets into the unified
