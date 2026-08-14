@@ -234,8 +234,44 @@ the best-validation checkpoint rather than the last one.
 
 ## 📈 Evaluation
 
-Evaluation is per-task. The evaluation scripts use the same OpenAI-compatible
-judge configuration as the reward server:
+Evaluation is per-task and runs in two steps: generate, then judge.
+
+**1. Generate.** `run_inference_local.py` writes the reference fields next to each
+generation, so its output is already the scorer's input — no join step:
+
+```bash
+huggingface-cli download SlowGuess/abforge-data --repo-type dataset \
+  --include "eval/*" --local-dir data
+
+python run_inference_local.py --task 1 \
+  --input data/eval/ablationbench_200.jsonl \
+  --output outputs/task1_infer.jsonl \
+  --model-path SlowGuess/ABForge-Qwen3-8B \
+  --dtype bf16 --device-map auto \
+  --max-new-tokens 5120 --temperature 0.0 --stop-on '</Result>'
+
+python run_inference_local.py --task 2 \
+  --input data/eval/ablationbench_200.jsonl \
+  --output outputs/task2_infer.jsonl \
+  --model-path SlowGuess/ABForge-Qwen3-8B \
+  --dtype bf16 --device-map auto \
+  --max-new-tokens 4096 --temperature 0.0 --stop-on '</Proposed_Plan>'
+```
+
+Re-running resumes where it left off; pass `--overwrite` to start the file over.
+
+To score the **published** generations of the 21 evaluated models instead, join
+them to the benchmark first — those files carry only the model output:
+
+```bash
+python eval/make_eval_input.py --task 1 \
+  --generations data/outputs/task1/generations/abforge.jsonl \
+  --bench data/eval/ablationbench_200.jsonl \
+  --output outputs/task1_infer.jsonl
+```
+
+**2. Judge.** The evaluation scripts use the same OpenAI-compatible judge
+configuration as the reward server:
 
 ```bash
 export JUDGE_API_BASE=https://api.openai.com/v1
@@ -245,6 +281,11 @@ export JUDGE_MODEL=...
 scripts/evaluate_task1.sh outputs/task1_infer.jsonl
 scripts/evaluate_task2.sh outputs/task2_infer.jsonl
 ```
+
+The reported Task 1 score is `paper_score = 100 × (R + 0.5 × (P_spec − 0.70))`,
+where `R` is bipartite-enforced recall over the reference focuses and `P_spec` is
+the mean paper-specificity of the generated bullets. Task 2 reports `design_score`
+over the fixed 10-item rubric. `adjusted_score` is a diagnostic, not the headline.
 
 ## 🗂️ Repository Layout
 
@@ -256,7 +297,10 @@ scripts/evaluate_task2.sh outputs/task2_infer.jsonl
 - `reward/` — the unified reward server for RL (`combined_reward.py`), which
   routes to the Task 1 / Task 2 rubric judges by `data_source`.
 - `scripts/` — launchers for SFT, RL, the reward server, local judges, and eval.
-- `eval/` — evaluation scripts.
+- `eval/` — the two rubric judges (`eval_task1.py`, `eval_task2_rubric.py`) and
+  `make_eval_input.py`, which joins published generations back to the benchmark.
+- `run_inference_local.py` — batch generation with a local checkpoint, writing
+  scorer-ready JSONL for either task.
 
 ## 🙏 Acknowledgements
 
