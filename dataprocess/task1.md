@@ -8,6 +8,8 @@
   (`data/abforge_combined_sft` / `data/abforge_combined_rl`).
 - Reward endpoint: `http://127.0.0.1:6010/get_reward` (unified server; routed
   to the Task 1 judge by `data_source`).
+- Data source: rows flagged `in_sft_task1` / `in_rl_task1` in the released
+  table (`--dataset`, default `SlowGuess/abforge-data`).
 - Data filter: keep papers with 1-6 GT focuses by default (`--min_gt 1
   --max_gt 6`), which is what the released SFT and RL runs used. Note this is
   deliberately wider on the low end than the "2-6" wording in the prompt

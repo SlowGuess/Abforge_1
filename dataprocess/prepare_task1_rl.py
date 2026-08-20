@@ -1,5 +1,18 @@
 """
-Preprocess ABForge Task 1 RL data from jsonl to parquet.
+Preprocess ABForge Task 1 RL data into verl parquet.
+
+This script does not generate new data. It reads the ABForge table of
+`SlowGuess/abforge-data`, keeps the rows flagged `in_rl_task1`, applies the
+ground-truth focus-count filter, and writes the prompt/reward columns expected
+by verl PPO/GRPO training together with a train/validation split.
+
+Usage:
+    python dataprocess/prepare_task1_rl.py --local_dir data/abforge_task1_rl
+
+`--dataset` also accepts a local directory of parquet shards, e.g. the
+`data/train` produced by
+`huggingface-cli download SlowGuess/abforge-data --repo-type dataset --local-dir data`,
+or a JSONL file carrying the same fields.
 """
 
 import argparse
@@ -15,10 +28,38 @@ import datasets
 
 _INVESTIGATION_FOCUS_RE = re.compile(r"<Investigation_Focus>", re.IGNORECASE)
 
+# rows flagged with this column form the Task 1 RL pool
+SPLIT_FLAG = "in_rl_task1"
+
+# columns pulled from the table; everything else is dropped up front so the
+# full table does not have to be materialized
+KEEP_COLUMNS = ["pdf_url", "title", "venue", "year",
+                "content", "candidates", "n_focuses", SPLIT_FLAG]
+
+# the table and the older JSONL exports name the same things differently
+ALIASES = {"Content": "content", "Candidates": "candidates"}
+
+
+def field(record: Dict, name: str) -> str:
+    """Read a reference field from either input schema."""
+    v = record.get(name)
+    if v is None:
+        v = record.get(ALIASES.get(name, name))
+    return v or ""
+
+
+def meta_of(record: Dict) -> Dict:
+    m = record.get("meta")
+    if isinstance(m, dict):
+        return m
+    return {k: record.get(k) or "" for k in ("title", "venue", "year", "pdf_url")}
+
 
 def count_gt_focuses(record: Dict) -> int:
-    cs = record.get("Candidates", "") or ""
-    return len(_INVESTIGATION_FOCUS_RE.findall(cs))
+    n = record.get("n_focuses")
+    if isinstance(n, int):
+        return n
+    return len(_INVESTIGATION_FOCUS_RE.findall(field(record, "Candidates")))
 
 
 INFER_TASK1 = """You are an expert AI research scientist and a rigorous peer reviewer. Your task is to identify the key ablation research questions that should be investigated to rigorously validate a paper's central methodological claims.
@@ -54,15 +95,28 @@ INFER_TASK1 = """You are an expert AI research scientist and a rigorous peer rev
 </Result>"""
 
 
-def load_jsonl(path: Path) -> List[Dict]:
-    records: List[Dict] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
-    return records
+def load_records(dataset: str, config, split: str) -> List[Dict]:
+    """The Task 1 RL rows, from the released table or from a JSONL file."""
+    src = os.path.expanduser(dataset)
+    if os.path.isfile(src):
+        with open(src, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    if os.path.isdir(src):
+        files = sorted(str(p) for p in Path(src).glob("**/*.parquet"))
+        if not files:
+            raise SystemExit(f"no .jsonl file and no parquet files at {dataset}")
+        ds = datasets.load_dataset("parquet", data_files=files, split="train")
+    elif config:
+        ds = datasets.load_dataset(dataset, config, split=split)
+    else:
+        ds = datasets.load_dataset(dataset, split=split)
+
+    drop = [c for c in ds.column_names if c not in KEEP_COLUMNS]
+    if drop:
+        ds = ds.remove_columns(drop)
+    ds = ds.filter(lambda r: r[SPLIT_FLAG])
+    return list(ds)
 
 
 def build_prompt(content: str, max_content_chars: int) -> str:
@@ -72,8 +126,8 @@ def build_prompt(content: str, max_content_chars: int) -> str:
 
 
 def convert_record(record: Dict, split: str, idx: int, max_content_chars: int) -> Dict:
-    meta = record.get("meta", {})
-    content = record.get("Content", "")
+    meta = meta_of(record)
+    content = field(record, "Content")
     prompt = build_prompt(content=content, max_content_chars=max_content_chars)
     return {
         "data_source": "abforge_task1",
@@ -85,14 +139,14 @@ def convert_record(record: Dict, split: str, idx: int, max_content_chars: int) -
             # non-existent `Identification` key, which left this an empty string; the
             # Task 1 reward scores against `extra_info.candidates`, so training was
             # unaffected, but the field is now populated and consistent.
-            "ground_truth": record.get("Candidates", ""),
+            "ground_truth": field(record, "Candidates"),
         },
         "extra_info": {
             "split": split,
             "index": idx,
             "title": meta.get("title", ""),
             "paper_context": content,
-            "candidates": record.get("Candidates", ""),
+            "candidates": field(record, "Candidates"),
             "meta": meta,
         },
     }
@@ -100,8 +154,12 @@ def convert_record(record: Dict, split: str, idx: int, max_content_chars: int) -
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True,
-                        help="ABForge RL JSONL or a local file exported from the Hugging Face dataset.")
+    parser.add_argument("--dataset", "--input", dest="dataset",
+                        default="SlowGuess/abforge-data",
+                        help="HF dataset id, a local directory of parquet shards, "
+                             "or a JSONL file carrying the same fields")
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--split", default="train")
     parser.add_argument("--local_dir", default="data/abforge_task1_rl")
     parser.add_argument("--val_size", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
@@ -116,11 +174,10 @@ def main():
                              "and the eval/reward count_penalty hard_cap.")
     args = parser.parse_args()
 
-    input_path = Path(os.path.expanduser(args.input)).resolve()
     local_dir = Path(os.path.expanduser(args.local_dir))
     local_dir.mkdir(parents=True, exist_ok=True)
 
-    records = load_jsonl(input_path)
+    records = load_records(args.dataset, args.config, args.split)
     n_total = len(records)
     records = [r for r in records
                if args.min_gt <= count_gt_focuses(r) <= args.max_gt]

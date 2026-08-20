@@ -4,6 +4,8 @@
 - SFT val parquet: `data/abforge_task2_sft/val.parquet`
 - RL train parquet: `data/abforge_task2_rl/train.parquet`
 - RL val parquet: `data/abforge_task2_rl/val.parquet`
+- Data source: rows flagged `in_sft_task2` / `in_rl_task2` in the released
+  table (`--dataset`, default `SlowGuess/abforge-data`).
 - Training consumes the unified mixture built by `prepare_combined.py`
   (`data/abforge_combined_sft` / `data/abforge_combined_rl`).
 - Reward endpoint: `http://127.0.0.1:6010/get_reward` (unified server; routed

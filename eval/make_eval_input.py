@@ -15,7 +15,7 @@ Usage:
         --bench data/eval/ablationbench_200.jsonl \
         --output preds_task1.jsonl
 
-`--bench` also accepts the unified table (a directory of `unified/*.parquet` or a
+`--bench` also accepts the ABForge table (a directory of `train/*.parquet` or a
 Hugging Face dataset id); use `--filter` to pick the split, e.g.
 `--bench SlowGuess/abforge-data --filter in_bench_200`.
 
@@ -29,7 +29,7 @@ import os
 from pathlib import Path
 from typing import Dict, List
 
-# the benchmark JSONL and the unified table name the same things differently
+# the benchmark JSONL and the ABForge table name the same things differently
 ALIASES = {
     "Content": "content", "Candidates": "candidates", "Goal": "goal",
     "Rubric": "rubric", "refined_standard_plan": "refined_standard_plan",
@@ -62,7 +62,7 @@ def load_bench(source: str, filter_col: str) -> List[Dict]:
             raise SystemExit(f"no .jsonl file and no parquet files at {source}")
         ds = hfds.load_dataset("parquet", data_files=files, split="train")
     else:
-        ds = hfds.load_dataset(src, "unified", split="train")
+        ds = hfds.load_dataset(src, split="train")
     if filter_col:
         ds = ds.filter(lambda r: r.get(filter_col))
     return list(ds)
@@ -74,7 +74,7 @@ def main() -> None:
     ap.add_argument("--generations", required=True,
                     help="outputs/task{1,2}/generations/<slug>.jsonl")
     ap.add_argument("--bench", required=True,
-                    help="benchmark JSONL, a directory of unified parquet, or a HF dataset id")
+                    help="benchmark JSONL, a directory of parquet shards, or a HF dataset id")
     ap.add_argument("--filter", default="",
                     help="for non-JSONL --bench: boolean column selecting the split")
     ap.add_argument("--output", required=True)

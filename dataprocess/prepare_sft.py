@@ -1,7 +1,7 @@
 """
 Preprocess ABForge SFT data into verl parquet.
 
-This script does not generate new supervision. It reads the unified table of
+This script does not generate new supervision. It reads the ABForge table of
 `SlowGuess/abforge-data`, keeps the rows belonging to the requested task's SFT
 split, formats them into the prompt/response columns consumed by the verl SFT
 trainer, filters overlong examples, and creates a paper-grouped train/validation
@@ -18,7 +18,7 @@ Usage:
 
 `--dataset` also accepts a local directory, e.g. one produced by
 `huggingface-cli download SlowGuess/abforge-data --repo-type dataset --local-dir data`
-(pass `data/unified`).
+(pass `data/train`).
 """
 
 import argparse
@@ -119,15 +119,15 @@ TASK_CFG = {
     },
 }
 
-# columns pulled from the unified table; everything else is dropped up front so
-# the 1.9 GB table does not have to be materialized in full
+# columns pulled from the table; everything else is dropped up front so the
+# full table does not have to be materialized
 KEEP_COLUMNS = ["pdf_url", "title", "content", "goal", "n_focuses",
                 "global_cot", "global_result", "detail_think", "detail_plan",
                 "in_sft_task1", "in_sft_task2"]
 
 
-def load_unified(dataset: str, config: str, split: str, cfg: Dict):
-    """Rows of the unified table that belong to this task's SFT split."""
+def load_records(dataset: str, config, split: str, cfg: Dict):
+    """Rows of the ABForge table that belong to this task's SFT split."""
     import datasets as hfds
 
     if os.path.isdir(os.path.expanduser(dataset)):
@@ -135,8 +135,10 @@ def load_unified(dataset: str, config: str, split: str, cfg: Dict):
         if not files:
             raise SystemExit(f"no parquet files under {dataset}")
         ds = hfds.load_dataset("parquet", data_files=files, split="train")
-    else:
+    elif config:
         ds = hfds.load_dataset(dataset, config, split=split)
+    else:
+        ds = hfds.load_dataset(dataset, split=split)
 
     drop = [c for c in ds.column_names if c not in KEEP_COLUMNS]
     if drop:
@@ -208,8 +210,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=int, choices=[1, 2], required=True)
     parser.add_argument("--dataset", default="SlowGuess/abforge-data",
-                        help="HF dataset id, or a local directory of unified/*.parquet")
-    parser.add_argument("--config", default="unified")
+                        help="HF dataset id, or a local directory of parquet shards")
+    parser.add_argument("--config", default=None)
     parser.add_argument("--split", default="train")
     parser.add_argument("--tokenizer_path", default="Qwen/Qwen3-8B")
     parser.add_argument("--local_dir", required=True)
@@ -235,7 +237,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[task {args.task}] loading {args.dataset} ({args.config}) ...")
-    sft_records = load_unified(args.dataset, args.config, args.split, cfg)
+    sft_records = load_records(args.dataset, args.config, args.split, cfg)
     print(f"[task {args.task}] sft records: {len(sft_records)}")
 
     print(f"[task {args.task}] loading tokenizer ...")

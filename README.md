@@ -103,34 +103,36 @@ export COMBINED_REWARD_PORT=6010
 Full training and evaluation data is available at
 [`SlowGuess/abforge-data`](https://huggingface.co/datasets/SlowGuess/abforge-data).
 
-Download it (the canonical table plus the RL and evaluation files):
+`train/` is a single table with one row per paper: the paper context is stored
+once, boolean `in_*` columns say which split each paper belongs to, and the task
+supervision hangs off the same row. The preprocessing scripts read it directly
+and apply their own filtering, so no pre-filtered training file is needed.
 
 ```bash
 huggingface-cli download SlowGuess/abforge-data --repo-type dataset \
-  --include "unified/*" "train/RL_*" "eval/*" --local-dir data
+  --include "train/*" "eval/*" --local-dir data
 ```
 
-Convert each task's training data to parquet. The SFT scripts read the unified
-table directly — pass a dataset id to stream it from the Hub, or the local
-`data/unified` directory downloaded above:
+Convert each task's training data to parquet. Pass the local `data/train`
+directory downloaded above, or omit `--dataset` to stream it from the Hub:
 
 ```bash
 # SFT
 python dataprocess/prepare_sft.py --task 1 \
-  --dataset data/unified \
+  --dataset data/train \
   --local_dir data/abforge_task1_sft
 
 python dataprocess/prepare_sft.py --task 2 \
-  --dataset data/unified \
+  --dataset data/train \
   --local_dir data/abforge_task2_sft
 
 # RL
 python dataprocess/prepare_task1_rl.py \
-  --input data/train/RL_task1_30K.jsonl \
+  --dataset data/train \
   --local_dir data/abforge_task1_rl
 
 python dataprocess/prepare_task2_rl.py \
-  --input data/train/RL_task2_30K.jsonl \
+  --dataset data/train \
   --local_dir data/abforge_task2_rl
 ```
 
@@ -290,9 +292,10 @@ over the fixed 10-item rubric. `adjusted_score` is a diagnostic, not the headlin
 ## 🗂️ Repository Layout
 
 - `verl_proj/` — the (lightly customized) `verl` training framework.
-- `dataprocess/` — all data handling: per-task JSONL→parquet conversion
-  (`prepare_*.py`), the unified-mixture merge (`prepare_combined.py`), the
-  external SFT dataset class (`abforge_sft_dataset.py`), task defaults
+- `dataprocess/` — all data handling: per-task conversion of the released table
+  to parquet (`prepare_*.py`), the unified-mixture merge
+  (`prepare_combined.py`), the external SFT dataset class
+  (`abforge_sft_dataset.py`), task defaults
   (`task1.md` / `task2.md`), and `examples/` schema samples (full data on Hugging Face).
 - `reward/` — the unified reward server for RL (`combined_reward.py`), which
   routes to the Task 1 / Task 2 rubric judges by `data_source`.
